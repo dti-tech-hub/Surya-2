@@ -21,7 +21,11 @@ const config: HardhatUserConfig = {
     version: "0.8.20",
     settings: {
       optimizer: { enabled: true, runs: 200 },
-      viaIR: false,
+      // viaIR removes the EVM stack-depth limit, which the solidity-coverage
+      // instrumentation hits on DisputeResolution.settleJuror (it adds stack pressure
+      // that the plain build tolerates). Compile time increases, output is equivalent.
+      // Documented in docs/DECISIONS.md (D-011).
+      viaIR: true,
     },
   },
   defaultNetwork: "hardhat",

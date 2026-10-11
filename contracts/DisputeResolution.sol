@@ -442,51 +442,69 @@ contract DisputeResolution is ReentrancyGuard {
         bool correct = (d.outcome == Outcome.Refund && !votedForCreator)
             || (d.outcome != Outcome.Refund && votedForCreator);
 
-        Juror storage j = jurors[msg.sender];
-
-        // Rewards are paid pro-rata from this dispute's bond escrow, split among the
-        // jurors who voted with the majority. An earlier revision paid a flat 1% of the
-        // TOTAL escrow to every correct juror regardless of minority share, which let a
-        // juror who participated in many disputes drain the bond pool. The share is now
-        // bounded by the bond escrow attributable to this dispute and scaled by weight.
-        uint256 reward;
+        // Split into helpers to keep the stack shallow: the coverage build instruments
+        // this function and pushes it over the 16-slot limit otherwise.
         if (correct) {
-            uint256 majorityWeight = d.forCreatorWeight > d.forRefundWeight
-                ? uint256(d.forCreatorWeight)
-                : uint256(d.forRefundWeight);
-            uint256 myWeight = jurorWeight(msg.sender);
-            uint256 disputeBondShare = d.bondEscrowed;
-            if (majorityWeight > 0 && myWeight > 0) {
-                // 50% of this dispute's bonds, divided among majority jurors by weight.
-                reward = (disputeBondShare * REWARD_SHARE_BPS / BPS) * myWeight / majorityWeight;
-            }
-
-            // Effects before interactions.
-            j.casesCorrect += 1;
-            if (reward > 0) {
-                totalBondEscrow -= reward;
-            }
-            reputation.recordVerifierVote(msg.sender, true);
-            emit JurorSettled(key, msg.sender, reward, 0);
-
-            if (reward > 0) {
-                (bool ok, ) = payable(msg.sender).call{ value: reward }("");
-                if (!ok) revert TransferFailed();
-            }
+            _settleCorrectJuror(key, d);
         } else {
-            uint256 slash = j.stake / 10; // 10% slash for voting against outcome
+            _settleIncorrectJuror(key);
+        }
+    }
 
-            // Effects before interactions.
-            j.stake -= uint128(slash);
-            totalJurorStake -= slash;
-            totalBondEscrow += slash;
-            reputation.recordVerifierVote(msg.sender, false);
-            reputation.recordSlash(msg.sender, slash);
-            emit JurorSettled(key, msg.sender, 0, slash);
+    /**
+     * @dev Rewards a juror whose vote matched the outcome.
+     *
+     *      The reward is drawn from `d.bondEscrowed` — the bond attributable to *this*
+     *      dispute — and shared among majority jurors in proportion to voting weight.
+     *
+     *      An earlier revision paid `totalBondEscrow / 100`, a flat 1% of the ENTIRE bond
+     *      pool, to every correct juror regardless of their minority share. Because
+     *      settlement is permitted once per dispute per juror, a juror who participated in
+     *      N disputes could withdraw roughly N% of the pool, draining funds escrowed
+     *      against other disputes' bond posters. Binding the reward to this dispute's own
+     *      bond makes the total payout bounded by REWARD_SHARE_BPS of what was posted here.
+     */
+    function _settleCorrectJuror(bytes32 key, Dispute storage d) private {
+        Juror storage j = jurors[msg.sender];
+        uint256 majorityWeight = d.forCreatorWeight > d.forRefundWeight
+            ? uint256(d.forCreatorWeight)
+            : uint256(d.forRefundWeight);
+        uint256 myWeight = jurorWeight(msg.sender);
 
-            (bool ok, ) = payable(treasury).call{ value: slash }("");
+        uint256 reward;
+        if (majorityWeight > 0 && myWeight > 0) {
+            reward = (d.bondEscrowed * REWARD_SHARE_BPS / BPS) * myWeight / majorityWeight;
+        }
+
+        // Effects before interactions.
+        j.casesCorrect += 1;
+        if (reward > 0) {
+            totalBondEscrow -= reward;
+        }
+        reputation.recordVerifierVote(msg.sender, true);
+        emit JurorSettled(key, msg.sender, reward, 0);
+
+        if (reward > 0) {
+            (bool ok, ) = payable(msg.sender).call{ value: reward }("");
             if (!ok) revert TransferFailed();
         }
+    }
+
+    /// @dev Slashes a juror whose vote contradicted the settled outcome.
+    function _settleIncorrectJuror(bytes32 key) private {
+        Juror storage j = jurors[msg.sender];
+        uint256 slash = j.stake / 10; // 10% slash for voting against outcome
+
+        // Effects before interactions.
+        j.stake -= uint128(slash);
+        totalJurorStake -= slash;
+        totalBondEscrow += slash;
+        reputation.recordVerifierVote(msg.sender, false);
+        reputation.recordSlash(msg.sender, slash);
+        emit JurorSettled(key, msg.sender, 0, slash);
+
+        (bool ok, ) = payable(treasury).call{ value: slash }("");
+        if (!ok) revert TransferFailed();
     }
 
     /// @notice Returns or slashes the raising backer's bond once the dispute resolves.
