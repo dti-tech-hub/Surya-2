@@ -1,0 +1,7 @@
+operation,medianGas,l1_cost_usd,l2_cost_usd,l2_as_pct_of_l1,pct_of_5usd_l1,pct_of_5usd_l2
+createCampaign,2426705,60.667625,0.000061,0,,
+contribute,40502,1.01255,0.000001,0,,
+submitEvidence,164194,4.10485,0.000004,0,,
+castVote,97697,2.442425,0.000002,0,,
+resolveMilestone,159723,3.993075,0.000004,0,,
+claimCreatorBalance,56786,1.41965,0.000001,0,,

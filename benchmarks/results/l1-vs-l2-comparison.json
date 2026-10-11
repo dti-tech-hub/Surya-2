@@ -1,0 +1,93 @@
+{
+  "generatedAt": "2026-10-11T13:06:13.353Z",
+  "model": "execution gas (measured locally) x live gas price x assumed token price",
+  "deployedToTestnet": false,
+  "networks": [
+    {
+      "label": "Ethereum Sepolia (L1)",
+      "chainId": 11155111,
+      "gasPriceGweiUsed": 10,
+      "gasPriceSource": "operator assumption",
+      "nativeSymbol": "ETH",
+      "nativeUsdAssumed": 2500,
+      "isL2": false
+    },
+    {
+      "label": "Polygon Amoy (L2)",
+      "chainId": 80002,
+      "gasPriceGweiUsed": 0.05,
+      "gasPriceSource": "operator assumption",
+      "nativeSymbol": "MATIC",
+      "nativeUsdAssumed": 0.5,
+      "isL2": true
+    }
+  ],
+  "ratios": {
+    "gasPriceRatio": 200,
+    "tokenPriceRatio": 5000,
+    "combinedCostRatio": 0.04
+  },
+  "operations": [
+    {
+      "operation": "createCampaign",
+      "medianGas": 2426705,
+      "l1Usd": 60.667625,
+      "l2Usd": 0.000061,
+      "l2OverL1Pct": 0,
+      "pctOf5usdL1": 1213.352,
+      "pctOf5usdL2": 0.001
+    },
+    {
+      "operation": "contribute",
+      "medianGas": 40502,
+      "l1Usd": 1.01255,
+      "l2Usd": 0.000001,
+      "l2OverL1Pct": 0,
+      "pctOf5usdL1": 20.251,
+      "pctOf5usdL2": 0
+    },
+    {
+      "operation": "submitEvidence",
+      "medianGas": 164194,
+      "l1Usd": 4.10485,
+      "l2Usd": 0.000004,
+      "l2OverL1Pct": 0,
+      "pctOf5usdL1": 82.097,
+      "pctOf5usdL2": 0
+    },
+    {
+      "operation": "castVote",
+      "medianGas": 97697,
+      "l1Usd": 2.442425,
+      "l2Usd": 0.000002,
+      "l2OverL1Pct": 0,
+      "pctOf5usdL1": 48.849,
+      "pctOf5usdL2": 0
+    },
+    {
+      "operation": "resolveMilestone",
+      "medianGas": 159723,
+      "l1Usd": 3.993075,
+      "l2Usd": 0.000004,
+      "l2OverL1Pct": 0,
+      "pctOf5usdL1": 79.862,
+      "pctOf5usdL2": 0
+    },
+    {
+      "operation": "claimCreatorBalance",
+      "medianGas": 56786,
+      "l1Usd": 1.41965,
+      "l2Usd": 0.000001,
+      "l2OverL1Pct": 0,
+      "pctOf5usdL1": 28.393,
+      "pctOf5usdL2": 0
+    }
+  ],
+  "caveats": [
+    "Execution gas is measured locally; it is chain-state-independent and therefore applies unchanged to both networks, but it has NOT been confirmed by deploying to either network.",
+    "L2 transaction cost here EXCLUDES the L1 data-availability charge for calldata, which on rollups is frequently the dominant cost. L2 figures are therefore optimistically low.",
+    "Gas prices were captured once, at run time, and are volatile. Testnet gas prices in particular do not predict mainnet economics.",
+    "USD conversion uses operator-supplied token prices, which are assumptions, not measurements. Re-run with --eth-usd and --matic-usd to re-price.",
+    "No deployment to a public testnet has been performed, so there are no real latency or throughput figures for either network."
+  ]
+}
