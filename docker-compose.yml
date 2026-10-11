@@ -1,0 +1,99 @@
+# Local orchestration for the off-chain services.
+#
+# SCOPE: this file starts the BACKEND and the ML SERVICE. It deliberately does NOT
+# start a database container, because SQLite is a file and the backend writes it to the
+# mounted ./backend/data volume. Adding a database container would be strictly worse
+# here: it would add an image pull, a network hop, and a volume-mount coordination step
+# in exchange for nothing. See docs/DECISIONS.md (D-009) for the limits this implies
+# (single writer, no horizontal scaling) and the PostgreSQL path for production.
+#
+# The Solidity contracts are NOT containerised either. Hardhat manages them; run
+# `npx hardhat node` in a separate terminal for a local chain, or point the backend at a
+# testnet via .env.
+#
+# Usage:
+#   docker compose up --build       # backend + ml-service
+#   docker compose --profile all up # also brings up a local IPFS node (optional)
+
+services:
+  ml-service:
+    build:
+      context: .
+      dockerfile: ml-service/Dockerfile
+    container_name: crowdfunding-ml
+    environment:
+      # The service binds 0.0.0.0 inside the container; "127.0.0.1" would make it
+      # unreachable from the backend.
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: crowdfunding-backend
+    depends_on:
+      ml-service:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      # Inside the compose network the ML service is reachable by service name, not
+      # localhost. This is the single most common reason a composed backend cannot see
+      # its dependency.
+      ML_SERVICE_URL: http://ml-service:8000
+      RPC_URL: ${RPC_URL:-http://host.docker.internal:8545}
+      CHAIN_ID: ${CHAIN_ID:-31337}
+      BACKEND_JWT_SECRET: ${BACKEND_JWT_SECRET:-dev-only-insecure-secret}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      INDEXER_CONFIRMATIONS: ${INDEXER_CONFIRMATIONS:-3}
+      PINATA_JWT: ${PINATA_JWT:-}
+      PINATA_GATEWAY_URL: ${PINATA_GATEWAY_URL:-https://gateway.pinata.cloud}
+      FACTORY_ADDRESS: ${FACTORY_ADDRESS:-}
+      VERIFIER_ADDRESS: ${VERIFIER_ADDRESS:-}
+      REPUTATION_ADDRESS: ${REPUTATION_ADDRESS:-}
+      DISPUTES_ADDRESS: ${DISPUTES_ADDRESS:-}
+      CREDENTIALS_ADDRESS: ${CREDENTIALS_ADDRESS:-}
+    volumes:
+      # The SQLite file lives here. Mounting it as a named volume (not a bind mount into
+      # the source tree) keeps host tooling from corrupting the WAL files while the
+      # service is running.
+      - backend-data:/app/data
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    extra_hosts:
+      # Lets the container reach a Hardhat node running on the host (Windows and macOS).
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Optional local IPFS. Not required: without PINATA_JWT the backend runs in
+  # "no-op pin" mode and records CIDs without actually pinning. Enable with:
+  #   docker compose --profile all up
+  ipfs:
+    profiles: ["all"]
+    image: ipfs/kubo:latest
+    container_name: crowdfunding-ipfs
+    ports:
+      - "5001:5001"   # HTTP API
+      - "8080:8080"   # Gateway
+    volumes:
+      - ipfs-data:/data/ipfs
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+  ipfs-data:

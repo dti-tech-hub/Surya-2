@@ -81,10 +81,16 @@ it("tracks multiple campaigns and exposes them by index", async () => {
       const second = await factory.campaignAt(1);
       expect(first).to.not.equal(second);
 
-      // Both are registered as this factory's deployments, and the public mapping
-      // exposes the stored creator for each.
+      // Both are registered as this factory's deployments. The `campaigns` mapping has
+      // no public getter because CampaignInfo contains a nested mapping, which ethers
+      // cannot auto-generate; isCampaign covers the registration check.
       expect(await factory.isCampaign(first)).to.equal(true);
       expect(await factory.isCampaign(second)).to.equal(true);
-      expect((await factory.campaigns(first)).creator).to.equal(creator.address);
+
+      // Each deployed campaign reports the creator through its own immutable field.
+      const c1 = await ethers.getContractAt("Campaign", first);
+      const c2 = await ethers.getContractAt("Campaign", second);
+      expect(await c1.creator()).to.equal(creator.address);
+      expect(await c2.creator()).to.equal(creator.address);
     });
 });

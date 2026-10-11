@@ -1,0 +1,162 @@
+name: CI
+
+# Runs on every push and PR. Kept fast on the critical path: the contract test suite and
+# compile gate every change, because a broken escrow contract is the worst failure this
+# project can ship. Heavier jobs (coverage, slither, ML) run in parallel and do not block.
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  contracts:
+    name: Contracts (compile + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Compile
+        run: npx hardhat compile
+
+      # Coverage is generated but not enforced at a threshold yet. The line-coverage
+      # figure is reported so regressions are visible in the log; making it a hard gate
+      # is future work, recorded in docs/DECISIONS.md (D-014).
+      - name: Test with coverage
+        run: npx hardhat coverage
+        continue-on-error: true
+
+      - name: Tests
+        run: npx hardhat test
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: solidity-coverage
+          path: |
+            coverage/
+            coverage.json
+          retention-days: 7
+
+  backend:
+    name: Backend (typecheck + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  ml-service:
+    name: ML service (data + train + metrics)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ml-service/requirements.txt
+
+      # Regenerates the dataset, retrains, and writes metrics.json. If this fails, the
+      # ML pipeline is broken and no downstream number should be trusted.
+      - name: Generate data and train
+        run: |
+          python ml-service/data_generation.py --n 2000
+          python ml-service/train.py
+
+      - name: Reputation self-check
+        run: python ml-service/reputation.py
+
+      - name: Survey pipeline self-check
+        run: |
+          python evaluation/survey/generate_sample.py
+          python evaluation/survey/analysis.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ml-metrics
+          path: ml-service/models/metrics.json
+          retention-days: 7
+
+  slither:
+    name: Security (Slither)
+    runs-on: ubuntu-latest
+    # Reporting job: it publishes findings and a triage table but does not fail the
+    # build. Failing CI on every stylistic Slither detector would train contributors to
+    # ignore the security job, which defeats its purpose. High-severity findings should
+    # be triaged in docs/SECURITY, not auto-blocked by a threshold that nobody reads.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          npm ci --legacy-peer-deps
+          pip install slither-analyzer
+
+      - name: Run Slither
+        run: |
+          npx hardhat compile
+          slither . --compile-force-framework hardhat --exclude-dependencies \
+            --json security/slither-report.json
+        continue-on-error: true
+
+      - name: Triage
+        run: python security/triage_slither.py security/slither-report.json
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: slither
+          path: |
+            security/slither-report.json
+            security/slither-summary.md
+          retention-days: 14
