@@ -1,0 +1,103 @@
+﻿
+Version
+=======
+> solidity-coverage: v0.8.17
+
+Instrumenting for coverage...
+=============================
+
+> Campaign.sol
+> CampaignFactory.sol
+> interfaces\IOracleAdapter.sol
+> MilestoneVerifier.sol
+> mocks\MockOracleAdapter.sol
+> mocks\ReentrantBacker.sol
+
+Compilation:
+============
+
+Nothing to compile
+
+Network Info
+============
+> HardhatEVM: v2.29.1
+> network:    hardhat
+
+
+
+  Campaign escrow lifecycle
+    deployment and funding
+      ΓêÜ registers each new campaign with the verifier (241ms)
+      ΓêÜ rejects a tranche schedule that does not sum to 100%
+      ΓêÜ accumulates contributions and reports the goal as met (87ms)
+      ΓêÜ rejects contributions after the funding deadline (108ms)
+      ΓêÜ cannot be closed before the funding deadline (82ms)
+    failed funding -> automatic refunds
+      ΓêÜ fails the campaign and refunds every backer pro-rata (89ms)
+      ΓêÜ does not allow a double refund (75ms)
+      ΓêÜ blocks refunds while the campaign is still funding (65ms)
+    successful campaign -> tranche release
+      ΓêÜ releases each tranche on verification and completes at 100% (227ms)
+      ΓêÜ cannot submit evidence twice for the same milestone (56ms)
+      ΓêÜ rejects evidence submission from a non-creator (45ms)
+      ΓêÜ rejects evidence submitted after the milestone deadline (50ms)
+    rejected milestone -> remaining funds refundable
+      ΓêÜ locks the tranche and lets the creator abandon, then refunds backers (133ms)
+      ΓêÜ rejects resolving a milestone that was never submitted (42ms)
+
+  Security invariants
+    reentrancy
+      ΓêÜ blocks reentrant calls into claimRefund (99ms)
+      ΓêÜ refuses a second refund from the same backer (47ms)
+    double release
+      ΓêÜ cannot resolve the same milestone twice (73ms)
+      ΓêÜ cannot claim the creator balance twice (71ms)
+    verifier registry access control
+      ΓêÜ rejects campaign registration from a non-registrar
+      ΓêÜ rejects parameter updates from a non-admin
+      ΓêÜ rejects voting from an unstaked address (50ms)
+      ΓêÜ rejects a second vote from the same verifier (55ms)
+      ΓêÜ rejects voting after the window closes (48ms)
+    fail-closed quorum
+      ΓêÜ rejects a milestone when quorum is not met, even with all votes Approve (111ms)
+    oracle adapter
+      ΓêÜ rejects an oracle vote from a non-oracle address (104ms)
+    milestone index bounds
+      ΓêÜ rejects out-of-range milestone indices (55ms)
+
+  MilestoneVerifier incentives
+    staking
+      ΓêÜ tracks total active stake (51ms)
+      ΓêÜ rejects staking below the minimum
+      ΓêÜ rejects double staking from the same address
+      ΓêÜ allows partial withdrawal and keeps the verifier active
+      ΓêÜ rejects withdrawing more than staked
+    settlement rewards and slashing
+      ΓêÜ rewards verifiers whose vote matched the outcome (107ms)
+      ΓêÜ slashes a verifier who voted against the outcome (90ms)
+      ΓêÜ prevents claiming the same settlement twice (82ms)
+      ΓêÜ penalises a staked verifier who did not vote (74ms)
+      ΓêÜ refuses to settle a round twice (64ms)
+    oracle weight
+      ΓêÜ counts the oracle attestation toward the tally (195ms)
+
+
+  37 passing (3s)
+
+------------------------|----------|----------|----------|----------|----------------|
+File                    |  % Stmts | % Branch |  % Funcs |  % Lines |Uncovered Lines |
+------------------------|----------|----------|----------|----------|----------------|
+ contracts\             |    80.08 |       50 |    74.51 |    81.21 |                |
+  Campaign.sol          |    75.44 |    49.28 |    77.27 |    80.69 |... 584,585,587 |
+  CampaignFactory.sol   |    70.59 |    20.83 |       50 |    66.67 |... 142,143,144 |
+  MilestoneVerifier.sol |    86.36 |    56.06 |    78.26 |    83.91 |... 498,649,650 |
+ contracts\interfaces\  |      100 |      100 |      100 |      100 |                |
+  IOracleAdapter.sol    |      100 |      100 |      100 |      100 |                |
+ contracts\mocks\       |    23.08 |       10 |    44.44 |    42.86 |                |
+  MockOracleAdapter.sol |        0 |      100 |       25 |       40 |       25,29,34 |
+  ReentrantBacker.sol   |    27.27 |       10 |       60 |    43.75 |... 57,58,63,64 |
+------------------------|----------|----------|----------|----------|----------------|
+All files               |    77.17 |    48.68 |       70 |    79.02 |                |
+------------------------|----------|----------|----------|----------|----------------|
+
+> Istanbul reports written to ./coverage/ and ./coverage.json
