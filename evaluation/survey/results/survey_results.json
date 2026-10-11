@@ -1,0 +1,278 @@
+{
+  "data_status": "SAMPLE",
+  "warning": "Synthetic responses for pipeline validation. These numbers are not study findings.",
+  "input_file": "sample_responses_SAMPLE_ONLY.csv",
+  "n_respondents": 48,
+  "sus": {
+    "mean": 49.17,
+    "sd": 13.97,
+    "interpretation": "OK",
+    "scores": [
+      50.0,
+      45.0,
+      60.0,
+      40.0,
+      50.0,
+      55.0,
+      60.0,
+      50.0,
+      40.0,
+      40.0,
+      45.0,
+      65.0,
+      35.0,
+      45.0,
+      60.0,
+      20.0,
+      65.0,
+      30.0,
+      50.0,
+      25.0,
+      60.0,
+      70.0,
+      45.0,
+      35.0,
+      65.0,
+      65.0,
+      70.0,
+      50.0,
+      45.0,
+      25.0,
+      35.0,
+      65.0,
+      50.0,
+      55.0,
+      40.0,
+      60.0,
+      35.0,
+      25.0,
+      70.0,
+      30.0,
+      60.0,
+      40.0,
+      55.0,
+      45.0,
+      70.0,
+      65.0,
+      35.0,
+      65.0
+    ]
+  },
+  "items": [
+    {
+      "item": "trust_before_q1",
+      "n": 48,
+      "mean": 2.903,
+      "sd": 0.718,
+      "min": 1.632,
+      "max": 4.533,
+      "median": 2.844
+    },
+    {
+      "item": "trust_before_q2",
+      "n": 48,
+      "mean": 2.889,
+      "sd": 0.681,
+      "min": 1.168,
+      "max": 4.551,
+      "median": 2.892
+    },
+    {
+      "item": "trust_before_q3",
+      "n": 48,
+      "mean": 2.884,
+      "sd": 0.704,
+      "min": 1.584,
+      "max": 5.0,
+      "median": 2.717
+    },
+    {
+      "item": "trust_before_q4",
+      "n": 48,
+      "mean": 2.72,
+      "sd": 0.759,
+      "min": 1.051,
+      "max": 5.0,
+      "median": 2.771
+    },
+    {
+      "item": "trust_before_q5",
+      "n": 48,
+      "mean": 2.838,
+      "sd": 0.645,
+      "min": 1.662,
+      "max": 4.252,
+      "median": 2.725
+    },
+    {
+      "item": "trust_before_q6",
+      "n": 48,
+      "mean": 2.892,
+      "sd": 0.756,
+      "min": 1.569,
+      "max": 5.0,
+      "median": 2.872
+    },
+    {
+      "item": "trust_after_q1",
+      "n": 48,
+      "mean": 3.298,
+      "sd": 0.898,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 3.359
+    },
+    {
+      "item": "trust_after_q2",
+      "n": 48,
+      "mean": 3.381,
+      "sd": 0.838,
+      "min": 1.628,
+      "max": 5.0,
+      "median": 3.285
+    },
+    {
+      "item": "trust_after_q3",
+      "n": 48,
+      "mean": 3.373,
+      "sd": 0.741,
+      "min": 1.504,
+      "max": 5.0,
+      "median": 3.395
+    },
+    {
+      "item": "trust_after_q4",
+      "n": 48,
+      "mean": 3.265,
+      "sd": 0.872,
+      "min": 1.21,
+      "max": 5.0,
+      "median": 3.31
+    },
+    {
+      "item": "trust_after_q5",
+      "n": 48,
+      "mean": 3.344,
+      "sd": 0.756,
+      "min": 1.593,
+      "max": 5.0,
+      "median": 3.371
+    },
+    {
+      "item": "trust_after_q6",
+      "n": 48,
+      "mean": 3.221,
+      "sd": 0.814,
+      "min": 1.454,
+      "max": 5.0,
+      "median": 3.186
+    },
+    {
+      "item": "sus_q1",
+      "n": 48,
+      "mean": 3.5,
+      "sd": 1.571,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 3.0
+    },
+    {
+      "item": "sus_q2",
+      "n": 48,
+      "mean": 3.5,
+      "sd": 1.676,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 4.0
+    },
+    {
+      "item": "sus_q3",
+      "n": 48,
+      "mean": 3.542,
+      "sd": 1.473,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 3.0
+    },
+    {
+      "item": "sus_q4",
+      "n": 48,
+      "mean": 3.583,
+      "sd": 1.748,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 5.0
+    },
+    {
+      "item": "sus_q5",
+      "n": 48,
+      "mean": 3.292,
+      "sd": 1.65,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 3.0
+    },
+    {
+      "item": "sus_q6",
+      "n": 48,
+      "mean": 3.458,
+      "sd": 1.663,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 3.0
+    },
+    {
+      "item": "sus_q7",
+      "n": 48,
+      "mean": 3.708,
+      "sd": 1.675,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 5.0
+    },
+    {
+      "item": "sus_q8",
+      "n": 48,
+      "mean": 3.75,
+      "sd": 1.682,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 5.0
+    },
+    {
+      "item": "sus_q9",
+      "n": 48,
+      "mean": 3.417,
+      "sd": 1.648,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 3.0
+    },
+    {
+      "item": "sus_q10",
+      "n": 48,
+      "mean": 3.5,
+      "sd": 1.775,
+      "min": 1.0,
+      "max": 5.0,
+      "median": 5.0
+    }
+  ],
+  "trust_before_after": {
+    "n": 48,
+    "mean_difference": 0.4594346042309518,
+    "sd_difference": 0.41147947435484566,
+    "t_statistic": 7.735638124171103,
+    "cohens_d": 1.1165431883359296,
+    "method": "paired t-test (scipy.stats.ttest_rel)",
+    "p_value": 6.335536256140015e-10
+  },
+  "contribution_amount": {
+    "n": 48,
+    "mean": 64.824,
+    "sd": 46.817,
+    "min": 12.55,
+    "max": 235.66,
+    "median": 47.465
+  }
+}
