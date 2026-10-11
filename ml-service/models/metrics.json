@@ -1,0 +1,105 @@
+{
+  "dataset": {
+    "n_samples": 4000,
+    "n_train": 2800,
+    "n_test": 1200,
+    "fraud_rate": 0.46175,
+    "isolation_forest_contamination": 0.4617857142857143,
+    "synthetic": true
+  },
+  "isolation_forest": {
+    "precision": 0.5927927927927928,
+    "recall": 0.5938628158844765,
+    "f1": 0.5933273219116321,
+    "roc_auc": 0.6613902828849572,
+    "average_precision": 0.6317130165984682,
+    "confusion_matrix": {
+      "true_negative": 420,
+      "false_positive": 226,
+      "false_negative": 225,
+      "true_positive": 329
+    }
+  },
+  "random_forest": {
+    "precision": 0.9731182795698925,
+    "recall": 0.98014440433213,
+    "f1": 0.9766187050359713,
+    "roc_auc": 0.9977953750377216,
+    "average_precision": 0.997381298844927,
+    "confusion_matrix": {
+      "true_negative": 631,
+      "false_positive": 15,
+      "false_negative": 11,
+      "true_positive": 543
+    }
+  },
+  "logistic_regression": {
+    "precision": 0.9175627240143369,
+    "recall": 0.924187725631769,
+    "f1": 0.920863309352518,
+    "roc_auc": 0.9848666048216741,
+    "average_precision": 0.9836682706254699,
+    "confusion_matrix": {
+      "true_negative": 600,
+      "false_positive": 46,
+      "false_negative": 42,
+      "true_positive": 512
+    }
+  },
+  "per_class": {
+    "random_forest": {
+      "0": {
+        "precision": 0.9828660436137072,
+        "recall": 0.9767801857585139,
+        "f1-score": 0.9798136645962733,
+        "support": 646.0
+      },
+      "1": {
+        "precision": 0.9731182795698925,
+        "recall": 0.98014440433213,
+        "f1-score": 0.9766187050359713,
+        "support": 554.0
+      },
+      "accuracy": 0.9783333333333334,
+      "macro avg": {
+        "precision": 0.9779921615917999,
+        "recall": 0.9784622950453219,
+        "f1-score": 0.9782161848161223,
+        "support": 1200.0
+      },
+      "weighted avg": {
+        "precision": 0.9783658258801461,
+        "recall": 0.9783333333333334,
+        "f1-score": 0.9783386582659339,
+        "support": 1200.0
+      }
+    },
+    "logistic_regression": {
+      "0": {
+        "precision": 0.9345794392523364,
+        "recall": 0.9287925696594427,
+        "f1-score": 0.9316770186335404,
+        "support": 646.0
+      },
+      "1": {
+        "precision": 0.9175627240143369,
+        "recall": 0.924187725631769,
+        "f1-score": 0.920863309352518,
+        "support": 554.0
+      },
+      "accuracy": 0.9266666666666666,
+      "macro avg": {
+        "precision": 0.9260710816333366,
+        "recall": 0.9264901476456058,
+        "f1-score": 0.9262701639930292,
+        "support": 1200.0
+      },
+      "weighted avg": {
+        "precision": 0.9267233890507934,
+        "recall": 0.9266666666666666,
+        "f1-score": 0.9266846895154683,
+        "support": 1200.0
+      }
+    }
+  }
+}

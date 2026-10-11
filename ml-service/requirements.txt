@@ -1,0 +1,27 @@
+# ML service dependencies.
+#
+# NOTE ON ENVIRONMENT: the package versions below are floors, not pins, so the service
+# installs on the Python available in the development environment. On Python 3.14 the
+# resolved versions are numpy 2.4.4, pandas 3.0.1, scikit-learn 1.8.0.
+#
+# If you hit "DLL load failed while importing bit_generator" on Windows, that is an
+# Application Control policy blocking numpy's native module inside a virtualenv. The
+# workaround that worked here was installing into the system interpreter instead of a
+# venv. See docs/DECISIONS.md (D-012).
+
+numpy>=2.0
+pandas>=2.2
+scikit-learn>=1.5
+scipy>=1.13
+joblib>=1.4
+
+# Serving
+fastapi>=0.115
+uvicorn>=0.32
+pydantic>=2.9
+
+# Charts
+matplotlib>=3.9
+
+# Development only
+pytest>=8.3
