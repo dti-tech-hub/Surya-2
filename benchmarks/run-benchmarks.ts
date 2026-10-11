@@ -128,6 +128,7 @@ async function freshParams(): Promise<typeof paramsShape> {
     ],
     specificationCIDs: ["cid0", "cid1", "cid2"],
     milestoneDeadlines: [t + 40 * 86400, t + 50 * 86400, t + 60 * 86400],
+    treasury: ethers.ZeroAddress,
   };
 }
 

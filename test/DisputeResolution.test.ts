@@ -62,6 +62,7 @@ async function fixture() {
     descriptionHashes: [ethers.ZeroHash, ethers.ZeroHash, ethers.ZeroHash],
     specificationCIDs: ["cid0", "cid1", "cid2"],
     milestoneDeadlines: [now + 40 * 86400, now + 50 * 86400, now + 60 * 86400],
+    treasury: ethers.ZeroAddress,
   };
   const tx = await factory.connect(creator).createCampaign(params);
   const rcpt = await tx.wait();

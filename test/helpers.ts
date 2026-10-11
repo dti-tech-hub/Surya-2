@@ -96,6 +96,8 @@ export async function buildParams(goal = GOAL, fundingDays = 30n) {
       fundingDeadline + Number(20n * DAY),
       fundingDeadline + Number(30n * DAY),
     ],
+    // address(0) makes the factory fall back to its own immutable treasury.
+    treasury: ethers.ZeroAddress,
   };
 }
 

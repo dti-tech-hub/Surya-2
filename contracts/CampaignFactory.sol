@@ -53,6 +53,9 @@ contract CampaignFactory {
         bytes32[] descriptionHashes;
         string[] specificationCIDs;
         uint64[] milestoneDeadlines;
+        /// @notice Dust/fee destination for the campaign. Defaults to the factory
+        ///         treasury when left as address(0).
+        address treasury;
     }
 
     uint256 internal constant BPS = 10_000;
@@ -101,6 +104,7 @@ contract CampaignFactory {
         Campaign campaign = new Campaign(
             msg.sender,
             address(verifier),
+            params.treasury == address(0) ? treasury : params.treasury,
             params.goal,
             params.fundingDeadline,
             params.trancheBps,

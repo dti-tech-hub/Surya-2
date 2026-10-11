@@ -1,0 +1,122 @@
+{
+  "generatedAt": "2026-10-11T13:06:42.230Z",
+  "simulated": true,
+  "results": [
+    {
+      "id": "A",
+      "name": "Sybil staking attack on milestone verification",
+      "description": "A fixed pool of honest verifiers rejects a deficient milestone while N attacker-controlled identities each stake the same amount and approve it. Measures how many attacker identities are required to flip the outcome.",
+      "parameters": {
+        "honestVerifiers": 5,
+        "stakePerIdentityEth": 1,
+        "quorumBps": 5000,
+        "thresholdBps": 6000,
+        "gasPriceGweiAssumed": 10,
+        "ethUsdAssumed": 2500
+      },
+      "observed": {
+        "sweep": [
+          {
+            "attackers": 1,
+            "honest": 5,
+            "approved": false,
+            "attackerStake": "1.0"
+          },
+          {
+            "attackers": 2,
+            "honest": 5,
+            "approved": false,
+            "attackerStake": "2.0"
+          },
+          {
+            "attackers": 3,
+            "honest": 5,
+            "approved": false,
+            "attackerStake": "3.0"
+          },
+          {
+            "attackers": 4,
+            "honest": 5,
+            "approved": false,
+            "attackerStake": "4.0"
+          },
+          {
+            "attackers": 5,
+            "honest": 5,
+            "approved": false,
+            "attackerStake": "5.0"
+          },
+          {
+            "attackers": 6,
+            "honest": 5,
+            "approved": false,
+            "attackerStake": "6.0"
+          },
+          {
+            "attackers": 7,
+            "honest": 5,
+            "approved": false,
+            "attackerStake": "7.0"
+          },
+          {
+            "attackers": 8,
+            "honest": 5,
+            "approved": true,
+            "attackerStake": "8.0"
+          }
+        ],
+        "tippingPointAttackerCount": 8,
+        "attackerCapitalAtTippingEth": "8.0",
+        "attackerCapitalAtTippingUsd": 20000
+      },
+      "conclusion": "The attacker must control 8 of the staked identities (8.0 ETH) to override 5 honest verifiers. Weighting votes by stake means identity count alone does not confer influence: each sybil costs real, slashable capital.",
+      "limitations": "This models only capital-based Sybil acquisition funded by the attacker. It does not model an attacker who compromises or socially engineers existing honest verifiers, which the stake mechanism does not defend against on its own.",
+      "simulated": true,
+      "measuredAt": "2026-10-11T13:06:42.058Z"
+    },
+    {
+      "id": "B",
+      "name": "Creator/verifier collusion",
+      "description": "A creator submits weak evidence. Three honest verifiers reject; two verifiers colluding with the creator approve. Measures whether the colluders can release funds against the honest majority, and what it costs them.",
+      "parameters": {
+        "honestVerifiers": 3,
+        "colludingVerifiers": 2,
+        "stakePerVerifierEth": 1,
+        "slashBps": 2000,
+        "rewardBps": 5000,
+        "ethUsdAssumed": 2500
+      },
+      "observed": {
+        "fundsReleasedWei": "0",
+        "colludingVerifierStakeBefore": "1.0",
+        "colludingVerifierStakeAfter": "0.8",
+        "colluderSlashEth": 0.2
+      },
+      "conclusion": "Stake-weighted majority voting held: 3 honest verifiers outvoted 2 colluders, so the deficient milestone was NOT released. The colluders' dissent was then slashed, making collusion economically negative rather than free.",
+      "limitations": "Collusion is modelled as on-chain vote selling only. Off-channel collusion (a creator briefing a verifier privately before evidence is submitted) is invisible to this mechanism and remains a real risk.",
+      "simulated": true,
+      "measuredAt": "2026-10-11T13:06:42.133Z"
+    },
+    {
+      "id": "C",
+      "name": "Dispute-module griefing",
+      "description": "A backer attempts to raise a dispute on every milestone in rapid succession to stall a campaign. Measures how many succeed and what capital is locked.",
+      "parameters": {
+        "disputeBondEth": 0,
+        "cooldownSeconds": 86400,
+        "milestonesInCampaign": 3,
+        "ethUsdAssumed": 2500
+      },
+      "observed": {
+        "disputesSuccessfullyRaised": 1,
+        "attemptsBlockedByCooldown": 2,
+        "capitalLockedEth": 0.05,
+        "capitalLockedUsd": 125
+      },
+      "conclusion": "The per-campaign cooldown bounds the damage: a spammer can open one dispute at a time, not one per milestone, and each costs a bond that is escrowed.",
+      "limitations": "This uses a single backer. A coalition of backers with distinct addresses could each independently satisfy the cooldown, so the cooldown is per-address-per-campaign, not a global limit. Rate limiting at the API layer is the intended complement.",
+      "simulated": true,
+      "measuredAt": "2026-10-11T13:06:42.230Z"
+    }
+  ]
+}

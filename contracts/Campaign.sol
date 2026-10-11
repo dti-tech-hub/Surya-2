@@ -91,6 +91,9 @@ contract Campaign is ReentrancyGuard, Pausable {
 
     address public immutable creator;
     address public immutable factory;
+    /// @notice Destination for protocol fees and rounding dust. Immutable by design:
+    ///         a caller-supplied sweep destination is a fund-drain vector.
+    address public immutable treasury;
     MilestoneVerifier public immutable verifier;
     uint64 public immutable createdAt;
 
@@ -206,10 +209,12 @@ contract Campaign is ReentrancyGuard, Pausable {
      * @param descriptionHashes_ keccak256 digest of each milestone's acceptance criteria.
      * @param specificationCIDs_ IPFS CID of each milestone's specification document.
      * @param milestoneDeadlines_ Per-milestone submission deadlines.
+     * @param treasury_ Destination for protocol fees and rounding dust.
      */
     constructor(
         address creator_,
         address verifier_,
+        address treasury_,
         uint256 goal_,
         uint64 fundingDeadline_,
         uint16[] memory trancheBps_,
@@ -217,7 +222,9 @@ contract Campaign is ReentrancyGuard, Pausable {
         string[] memory specificationCIDs_,
         uint64[] memory milestoneDeadlines_
     ) {
-        if (creator_ == address(0) || verifier_ == address(0)) revert ZeroAddress();
+        if (creator_ == address(0) || verifier_ == address(0) || treasury_ == address(0)) {
+            revert ZeroAddress();
+        }
         if (goal_ == 0) revert ZeroGoal();
         if (fundingDeadline_ <= block.timestamp) revert InvalidDeadline(fundingDeadline_, block.timestamp);
 
@@ -242,6 +249,7 @@ contract Campaign is ReentrancyGuard, Pausable {
 
         creator = creator_;
         factory = msg.sender;
+        treasury = treasury_;
         verifier = MilestoneVerifier(verifier_);
         createdAt = uint64(block.timestamp);
         goal = goal_;
@@ -458,19 +466,25 @@ contract Campaign is ReentrancyGuard, Pausable {
 
     /**
      * @notice Recovers rounding dust left after every backer has been refunded.
-     * @dev Requires that every known backer has claimed, and that the dust is below one
-     *      wei per backer. Routed to the treasury, never to an arbitrary caller.
+     * @dev Requires that every known backer has claimed. Destination is the immutable
+     *      {treasury} set at construction, NOT a caller-supplied address: an earlier
+     *      revision took the destination as a parameter, which meant any address could
+     *      sweep the dust to itself. Slither flagged this as `arbitrary-send-eth` and
+     *      the parameter has been removed.
      */
-    function sweepDust(address treasury) external nonReentrant {
-        if (treasury == address(0)) revert ZeroAddress();
+    function sweepDust() external nonReentrant {
         if (state != State.Failed && state != State.Cancelled) revert WrongState(State.Failed, state);
 
-        for (uint256 i = 0; i < backers.length; ++i) {
+        uint256 n = backers.length;
+        for (uint256 i = 0; i < n; ++i) {
             if (!refundClaimed[backers[i]]) revert NothingToSweep();
         }
 
         uint256 dust = address(this).balance - (totalContributed - totalReleased - totalRefunded);
         if (dust == 0) revert NothingToSweep();
+
+        // Checks-Effects-Interactions.
+        totalRefunded += dust;
 
         (bool ok, ) = payable(treasury).call{ value: dust }("");
         if (!ok) revert TransferFailed();
