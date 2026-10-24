@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-11T13:06:42.230Z",
+  "generatedAt": "2026-10-24T01:16:51.570Z",
   "simulated": true,
   "results": [
     {
@@ -72,7 +72,7 @@
       "conclusion": "The attacker must control 8 of the staked identities (8.0 ETH) to override 5 honest verifiers. Weighting votes by stake means identity count alone does not confer influence: each sybil costs real, slashable capital.",
       "limitations": "This models only capital-based Sybil acquisition funded by the attacker. It does not model an attacker who compromises or socially engineers existing honest verifiers, which the stake mechanism does not defend against on its own.",
       "simulated": true,
-      "measuredAt": "2026-10-11T13:06:42.058Z"
+      "measuredAt": "2026-10-24T01:16:51.308Z"
     },
     {
       "id": "B",
@@ -95,7 +95,7 @@
       "conclusion": "Stake-weighted majority voting held: 3 honest verifiers outvoted 2 colluders, so the deficient milestone was NOT released. The colluders' dissent was then slashed, making collusion economically negative rather than free.",
       "limitations": "Collusion is modelled as on-chain vote selling only. Off-channel collusion (a creator briefing a verifier privately before evidence is submitted) is invisible to this mechanism and remains a real risk.",
       "simulated": true,
-      "measuredAt": "2026-10-11T13:06:42.133Z"
+      "measuredAt": "2026-10-24T01:16:51.421Z"
     },
     {
       "id": "C",
@@ -116,7 +116,7 @@
       "conclusion": "The per-campaign cooldown bounds the damage: a spammer can open one dispute at a time, not one per milestone, and each costs a bond that is escrowed.",
       "limitations": "This uses a single backer. A coalition of backers with distinct addresses could each independently satisfy the cooldown, so the cooldown is per-address-per-campaign, not a global limit. Rate limiting at the API layer is the intended complement.",
       "simulated": true,
-      "measuredAt": "2026-10-11T13:06:42.230Z"
+      "measuredAt": "2026-10-24T01:16:51.570Z"
     }
   ]
 }

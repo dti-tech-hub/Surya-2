@@ -1,0 +1,249 @@
+{
+  "network": "hardhat",
+  "chainId": "31337",
+  "simulated": true,
+  "measuredAt": "2026-10-24T01:20:38.362Z",
+  "assumptions": {
+    "gasPriceGwei": 10,
+    "ethUsd": 2500,
+    "samples": 5
+  },
+  "gas": [
+    {
+      "operation": "createCampaign",
+      "gasUsed": "2113639",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0x0715c4d8881c5a232aea0389175b53b6aada46de3097a856a2c057e967999a12"
+    },
+    {
+      "operation": "createCampaign",
+      "gasUsed": "2096539",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0x18e7f379920a2fc90a4cce3fe810f6a7bbf00db5f720006d65d76e2019b37030"
+    },
+    {
+      "operation": "createCampaign",
+      "gasUsed": "2096539",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x7ed7df4965827f0fbdf6612a93d6e9930f9c2eabb31c5441a776bf5b89b8504e"
+    },
+    {
+      "operation": "createCampaign",
+      "gasUsed": "2096539",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0x08a68e3b04866917f4ac436b6fa4c2ce8093befc46d3a8b09e6620c4e2f9f8d9"
+    },
+    {
+      "operation": "createCampaign",
+      "gasUsed": "2096539",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x7efebd90d1e6e2ee79552431009f27d90452f83d8260557b463c4d8edf071a76"
+    },
+    {
+      "operation": "contribute",
+      "gasUsed": "141597",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x27534c62e140de5a0f4526683a2e58093b0e31b73a20159897200897df8b9664"
+    },
+    {
+      "operation": "contribute",
+      "gasUsed": "40707",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0xfdaa1aef7915c86d8e1cc31772a65812ca453b8757d6d79532ce3d2cbbb3eb8e"
+    },
+    {
+      "operation": "contribute",
+      "gasUsed": "40707",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x4a57d6af739eb01e7a5c1d2e983be1216b8533595258cbb49d4880f026184aa3"
+    },
+    {
+      "operation": "contribute",
+      "gasUsed": "40707",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x9391c0f7c1b5810efb080ab9ca7ed7e9a92fc7954bee3414af3bf7e454f49c33"
+    },
+    {
+      "operation": "contribute",
+      "gasUsed": "40707",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0xf9022e06818a0d12eac0bbf2bcf03ca71b451ae5934afce2919fe79805cc9588"
+    },
+    {
+      "operation": "submitEvidence",
+      "gasUsed": "163749",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x022c88fcf715a543d30ab4bf50d6a247e77c72f62e7624d9361bf62fbab5b68c"
+    },
+    {
+      "operation": "castVote",
+      "gasUsed": "97157",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0xe4b21f094c80612a517d2ef7b9b2db6ba92a333dc4e50f34092ded87b3db31e6"
+    },
+    {
+      "operation": "resolveMilestone",
+      "gasUsed": "157543",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0x2303d12557c1c837de8011f6ab9fb4990215fdf4af457ad4809b26a4c6f9d51c"
+    },
+    {
+      "operation": "claimCreatorBalance",
+      "gasUsed": "57144",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x5f82998517a34d1e5227bda57c94fcebdce1a2c4e414c46bb9ae04473ab22191"
+    },
+    {
+      "operation": "submitEvidence",
+      "gasUsed": "163749",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0x36ddf1a981cb1e93f0c639117e4b9587f3cdf97d779b89fb43eaa5ac88fc4643"
+    },
+    {
+      "operation": "castVote",
+      "gasUsed": "97157",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x6e97c3bd6b4d6eb385784f87a2690bddb39454929ad012d9fcc9210c1ac2f4e3"
+    },
+    {
+      "operation": "resolveMilestone",
+      "gasUsed": "157543",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0x8a4c2e30286115cf3e5b9d878df9ca0eefde339d293992db96633df10fff3b95"
+    },
+    {
+      "operation": "claimCreatorBalance",
+      "gasUsed": "57144",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0xb1418bea0e450b86ad3449c6ea5b44c040ce73e78fd1c0e6901dd6f3a671ff22"
+    },
+    {
+      "operation": "submitEvidence",
+      "gasUsed": "163749",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0xd5545d5936cf7bce2cfd6d78fa9596550b1ded749273a2a96ae50cdf41c41572"
+    },
+    {
+      "operation": "castVote",
+      "gasUsed": "97157",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x424920a1d33b1d0f7788e9dabb6b0037aeff05d01e2ceaed502f4b101623f18a"
+    },
+    {
+      "operation": "resolveMilestone",
+      "gasUsed": "157543",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0xb39067229f04377c0446f045a1704e32eef24f830dc700da7c9c4816474b424e"
+    },
+    {
+      "operation": "claimCreatorBalance",
+      "gasUsed": "57144",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0xed2504373bb2afbad1d4aa983c8204817c06f37d1c84ed94f0130853bdf82560"
+    },
+    {
+      "operation": "submitEvidence",
+      "gasUsed": "163749",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 1,
+      "txHash": "0xf215b2c2485bc7dc77fc49a4b1b4599a3aecc4ff952e63b8533cd6580edba141"
+    },
+    {
+      "operation": "castVote",
+      "gasUsed": "97157",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x8c5f58e586e77fa996605ba876a3f7358f3c31e294f93f957a9c20f99961ad26"
+    },
+    {
+      "operation": "resolveMilestone",
+      "gasUsed": "157543",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x802028c8eedec323ccc56eac4322451d7d81b1743fc77215d35fe3550383853e"
+    },
+    {
+      "operation": "claimCreatorBalance",
+      "gasUsed": "57144",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0xf175ecb5d2d6400a460bf62d40e987d9bd518498e2ee2a4c84139cfee86d0174"
+    },
+    {
+      "operation": "submitEvidence",
+      "gasUsed": "163749",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x9a715592e68ef54055b7194a0eef036fa4768fce3b9ebb9f1ae702f83fe8364a"
+    },
+    {
+      "operation": "castVote",
+      "gasUsed": "97157",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x8bed1efd5381c79aab0879ea35a7316f88479a10c4a36ee1134cf8e90ed11fc7"
+    },
+    {
+      "operation": "resolveMilestone",
+      "gasUsed": "157543",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x65e0affe8b7dbf4e2d12a332473c0b5e6d803749f615d95aeab02634b9058d34"
+    },
+    {
+      "operation": "claimCreatorBalance",
+      "gasUsed": "57144",
+      "effectiveGasPrice": "0",
+      "wallClockMs": 0,
+      "txHash": "0x6825795529b27eb11b170b484df6bcfba08a7d295668ad8a37b5f45cc6d9b954"
+    }
+  ],
+  "throughput": [
+    {
+      "concurrency": 10,
+      "operations": 20,
+      "totalMs": 111,
+      "txPerSecond": 180.18,
+      "failures": 0
+    },
+    {
+      "concurrency": 50,
+      "operations": 100,
+      "totalMs": 460,
+      "txPerSecond": 217.39,
+      "failures": 0
+    },
+    {
+      "concurrency": 100,
+      "operations": 200,
+      "totalMs": 1900,
+      "txPerSecond": 105.26,
+      "failures": 0
+    }
+  ],
+  "notes": [
+    "SIMULATED RUN: in-process Hardhat EVM. No network latency, no propagation delay, no L1 data-availability cost. Valid only for comparing operations against each other. Do not use for cost or throughput claims."
+  ]
+}

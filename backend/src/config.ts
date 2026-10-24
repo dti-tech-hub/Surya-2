@@ -7,16 +7,22 @@
  */
 import { z } from "zod";
 
+// NOTE on trimming: `cmd /c "set FOO=bar && ..."` leaves a trailing space in FOO on
+// Windows. A trailing space in NETWORK_NAME silently selects a nonexistent deployment
+// manifest ("localhost .json"), which makes the indexer start with zero contract
+// addresses and index nothing while reporting healthy. Every string field below uses
+// zod's built-in `.trim()` so that failure class cannot recur. (An earlier attempt
+// used z.preprocess, which widens the inferred type to unknown and breaks typecheck.)
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(4000),
 
-  DATABASE_PATH: z.string().default("./data/app.db"),
+  DATABASE_PATH: z.string().trim().default("./data/app.db"),
 
-  BACKEND_JWT_SECRET: z.string().min(8).default("dev-only-insecure-secret"),
+  BACKEND_JWT_SECRET: z.string().trim().min(8).default("dev-only-insecure-secret"),
 
-  FRONTEND_ORIGIN: z.string().default("http://localhost:5173"),
-
+  FRONTEND_ORIGIN: z.string().trim().default("http://localhost:5173"),
   /** Blocks a list page; health checks and metrics stay unthrottled. */
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
@@ -29,24 +35,27 @@ const schema = z.object({
   INDEXER_POLL_MS: z.coerce.number().int().positive().default(5_000),
   INDEXER_START_BLOCK: z.coerce.number().int().min(0).default(0),
 
-  RPC_URL: z.string().default("http://127.0.0.1:8545"),
+  RPC_URL: z.string().trim().default("http://127.0.0.1:8545"),
   CHAIN_ID: z.coerce.number().int().default(31337),
 
-  FACTORY_ADDRESS: z.string().optional(),
-  VERIFIER_ADDRESS: z.string().optional(),
-  REPUTATION_ADDRESS: z.string().optional(),
-  DISPUTES_ADDRESS: z.string().optional(),
-  CREDENTIALS_ADDRESS: z.string().optional(),
+  /** Selects deployments/<NETWORK_NAME>.json. Must match the Hardhat network name. */
+  NETWORK_NAME: z.string().trim().default("hardhat"),
 
-  PINATA_JWT: z.string().optional(),
-  PINATA_GATEWAY_URL: z.string().default("https://gateway.pinata.cloud"),
-  IPFS_GATEWAY_URL: z.string().default("https://ipfs.io/ipfs/"),
+  FACTORY_ADDRESS: z.string().trim().optional(),
+  VERIFIER_ADDRESS: z.string().trim().optional(),
+  REPUTATION_ADDRESS: z.string().trim().optional(),
+  DISPUTES_ADDRESS: z.string().trim().optional(),
+  CREDENTIALS_ADDRESS: z.string().trim().optional(),
 
-  ML_SERVICE_URL: z.string().default("http://127.0.0.1:8000"),
+  PINATA_JWT: z.string().trim().optional(),
+  PINATA_GATEWAY_URL: z.string().trim().default("https://gateway.pinata.cloud"),
+  IPFS_GATEWAY_URL: z.string().trim().default("https://ipfs.io/ipfs/"),
+
+  ML_SERVICE_URL: z.string().trim().default("http://127.0.0.1:8000"),
   ML_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
 
-  VERAMO_AGENT_PRIVATE_KEY: z.string().optional(),
-  VERAMO_ISSUER_DID: z.string().optional(),
+  VERAMO_AGENT_PRIVATE_KEY: z.string().trim().optional(),
+  VERAMO_ISSUER_DID: z.string().trim().optional(),
 
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
 });

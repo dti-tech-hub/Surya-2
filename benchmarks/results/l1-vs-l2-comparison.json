@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-11T13:06:13.353Z",
+  "generatedAt": "2026-10-24T01:20:18.389Z",
   "model": "execution gas (measured locally) x live gas price x assumed token price",
   "deployedToTestnet": false,
   "networks": [
@@ -30,56 +30,56 @@
   "operations": [
     {
       "operation": "createCampaign",
-      "medianGas": 2426705,
-      "l1Usd": 60.667625,
-      "l2Usd": 0.000061,
+      "medianGas": 2096539,
+      "l1Usd": 52.413475,
+      "l2Usd": 0.000052,
       "l2OverL1Pct": 0,
-      "pctOf5usdL1": 1213.352,
+      "pctOf5usdL1": 1048.269,
       "pctOf5usdL2": 0.001
     },
     {
       "operation": "contribute",
-      "medianGas": 40502,
-      "l1Usd": 1.01255,
+      "medianGas": 40707,
+      "l1Usd": 1.017675,
       "l2Usd": 0.000001,
       "l2OverL1Pct": 0,
-      "pctOf5usdL1": 20.251,
+      "pctOf5usdL1": 20.354,
       "pctOf5usdL2": 0
     },
     {
       "operation": "submitEvidence",
-      "medianGas": 164194,
-      "l1Usd": 4.10485,
+      "medianGas": 163749,
+      "l1Usd": 4.093725,
       "l2Usd": 0.000004,
       "l2OverL1Pct": 0,
-      "pctOf5usdL1": 82.097,
+      "pctOf5usdL1": 81.875,
       "pctOf5usdL2": 0
     },
     {
       "operation": "castVote",
-      "medianGas": 97697,
-      "l1Usd": 2.442425,
+      "medianGas": 97157,
+      "l1Usd": 2.428925,
       "l2Usd": 0.000002,
       "l2OverL1Pct": 0,
-      "pctOf5usdL1": 48.849,
+      "pctOf5usdL1": 48.579,
       "pctOf5usdL2": 0
     },
     {
       "operation": "resolveMilestone",
-      "medianGas": 159723,
-      "l1Usd": 3.993075,
+      "medianGas": 157543,
+      "l1Usd": 3.938575,
       "l2Usd": 0.000004,
       "l2OverL1Pct": 0,
-      "pctOf5usdL1": 79.862,
+      "pctOf5usdL1": 78.772,
       "pctOf5usdL2": 0
     },
     {
       "operation": "claimCreatorBalance",
-      "medianGas": 56786,
-      "l1Usd": 1.41965,
+      "medianGas": 57144,
+      "l1Usd": 1.4286,
       "l2Usd": 0.000001,
       "l2OverL1Pct": 0,
-      "pctOf5usdL1": 28.393,
+      "pctOf5usdL1": 28.572,
       "pctOf5usdL2": 0
     }
   ],

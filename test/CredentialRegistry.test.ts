@@ -211,12 +211,48 @@ describe("CredentialRegistry", () => {
         .connect(issuer)
         .attestCredential(holder.address, hash, "VerifiedCreator", (await time.latest()) + 86400);
 
-      // A holder must not be able to repurpose a creator credential as a KYC one.
+// A holder must not be able to repurpose a creator credential as a KYC one.
       expect(await registry.isCredentialValid(holder.address, hash, "KycLite")).to.equal(false);
     });
-  });
-});
 
+    it("returns default zeros for getCredential on an unattested id", async () => {
+      const { registry } = await loadFixture(fixture);
+      const emptyId = ethers.keccak256(ethers.toUtf8Bytes("never-attested"));
+      const record = await registry.getCredential(emptyId);
+      expect(record.issuedAt).to.equal(0);
+      expect(record.credentialHash).to.equal(ethers.ZeroHash);
+      expect(record.schemaType).to.equal("");
+      expect(record.revoked).to.equal(false);
+      expect(record.expiresAt).to.equal(0);
+      expect(record.revokedAt).to.equal(0);
+    });
+
+    it("reports invalid for an expired credential", async () => {
+      const { registry, issuer, holder } = await loadFixture(fixture);
+      const hash = ethers.keccak256(ethers.toUtf8Bytes("vc"));
+      const expiry = (await time.latest()) + 100;
+      await registry.connect(issuer).attestCredential(holder.address, hash, "VerifiedCreator", expiry);
+      await time.increaseTo(expiry + 1);
+      expect(
+        await registry.isCredentialValid(holder.address, hash, "VerifiedCreator")
+      ).to.equal(false);
+    });
+
+    it("reports invalid after revocation then re-attestation with different schema", async () => {
+      const { registry, issuer, holder } = await loadFixture(fixture);
+      const hash = ethers.keccak256(ethers.toUtf8Bytes("vc"));
+      const expiry = (await time.latest()) + 86400;
+      await registry.connect(issuer).attestCredential(holder.address, hash, "VerifiedCreator", expiry);
+      await registry.connect(issuer).revokeCredential(hash, holder.address);
+      expect(
+        await registry.isCredentialValid(holder.address, hash, "VerifiedCreator")
+      ).to.equal(false);
+      // After revocation, a new attestation with the same hash should still be rejected as AlreadyAttested
+      await expect(
+        registry.connect(issuer).attestCredential(holder.address, hash, "VerifiedCreator", expiry)
+      ).to.be.revertedWithCustomError(registry, "AlreadyAttested");
+    });
+});
 describe("MockOracleAdapter", () => {
   it("returns the configured verdict and exposes its source description", async () => {
     const Mock = await ethers.getContractFactory("MockOracleAdapter");
@@ -238,4 +274,6 @@ describe("MockOracleAdapter", () => {
     await oracle.setVerdict(true);
     expect(await oracle.attest(ethers.ZeroAddress, 0, ethers.ZeroHash)).to.equal(true);
   });
+});
+
 });
