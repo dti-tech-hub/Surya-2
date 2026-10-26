@@ -5,9 +5,9 @@
   "description": "Dashboard for the blockchain crowdfunding trust framework (campaigns, risk, indexer status)",
   "type": "module",
   "scripts": {
-    "dev": "vite --host --port 5173",
+    "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --port 5173 --strictPort"
+    "preview": "vite preview --port 5180"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -22,7 +22,7 @@ const schema = z.object({
 
   BACKEND_JWT_SECRET: z.string().trim().min(8).default("dev-only-insecure-secret"),
 
-  FRONTEND_ORIGIN: z.string().trim().default("http://localhost:5173"),
+  FRONTEND_ORIGIN: z.string().trim().default("http://localhost:5180,http://localhost:5173"),
   /** Blocks a list page; health checks and metrics stay unthrottled. */
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
