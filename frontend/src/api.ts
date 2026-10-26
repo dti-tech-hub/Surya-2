@@ -28,6 +28,11 @@ export interface CampaignSummary {
   releasedBps: number;
   createdAt: number;
   risk: RiskBadge | null;
+  // Humanized fields
+  title?: string;
+  category?: string;
+  creatorName?: string;
+  tagline?: string;
 }
 
 export interface CampaignDetail extends CampaignSummary {
