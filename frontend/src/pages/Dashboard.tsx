@@ -1,30 +1,86 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  api, formatEth, formatTime,
-  type CampaignDetail, type CampaignSummary,
-  type IndexerStatus, type ReadyChecks, type StatsData,
+  api,
+  formatEth,
+  formatTime,
+  type AppConfig,
+  type CampaignDetail,
+  type CampaignSummary,
+  type IndexerStatus,
+  type ReadyChecks,
+  type ResearchResults,
+  type StatsData,
 } from "../api";
 import {
-  MOCK_CAMPAIGNS, MOCK_CAMPAIGN_DETAIL, MOCK_STATS,
-  MOCK_INDEXER, MOCK_READY,
-} from "../mock";
+  campaignContract,
+  connectDemoWallet,
+  connectWallet,
+  disputeContract,
+  ensureChain,
+  factoryContract,
+  hashFile,
+  verifierContract,
+  type WalletConnection,
+} from "../chain";
+import { parseEther, keccak256, toUtf8Bytes } from "ethers";
 
-type TabKey = "campaigns" | "howItWorks" | "gasEconomics" | "aiRisk" | "attacks" | "security";
+type TabKey = "projects" | "create" | "howItWorks" | "results";
+
+const STATE_FILTERS = ["All", "Active", "Funding", "Completed", "Failed"] as const;
+const MILESTONE_STATES = ["Pending", "Submitted", "Verified", "Rejected"];
+
+/** Reads a possibly-named property off an untyped row without crashing. */
+function field(row: unknown, key: string): string {
+  if (row && typeof row === "object" && key in row) {
+    const v = (row as Record<string, unknown>)[key];
+    if (v !== undefined && v !== null) return String(v);
+  }
+  return "";
+}
+
+function rowField(row: unknown, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = field(row, key);
+    if (value) return value;
+  }
+  return "";
+}
+
+function milestoneState(row: unknown): string {
+  const raw = rowField(row, "state") || "Pending";
+  if (/^\d+$/.test(raw)) return MILESTONE_STATES[Number(raw)] ?? "Pending";
+  return raw;
+}
+
+function progressPct(contributed: string, goal: string): number {
+  const c = BigInt(contributed || "0");
+  const g = BigInt(goal || "0");
+  if (g === 0n) return 0;
+  return Number((c * 10_000n) / g) / 100;
+}
+
+function short(address: string): string {
+  return address.length > 16 ? `${address.slice(0, 10)}…${address.slice(-6)}` : address;
+}
 
 export function Dashboard() {
-  const [activeTab, setActiveTab] = useState<TabKey>("campaigns");
-  const [selectedCampaign, setSelectedCampaign] = useState<CampaignDetail | null>(null);
-  const [campaigns, setCampaigns] = useState<CampaignSummary[]>(MOCK_CAMPAIGNS);
-  const [stats, setStats] = useState<StatsData>(MOCK_STATS);
-  const [indexer, setIndexer] = useState<IndexerStatus>(MOCK_INDEXER);
-  const [ready, setReady] = useState<ReadyChecks>(MOCK_READY);
-  const [filterState, setFilterState] = useState<string>("All");
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [isLiveConnected, setIsLiveConnected] = useState<boolean>(false);
-  const [showExplainer, setShowExplainer] = useState<boolean>(true);
+  const [activeTab, setActiveTab] = useState<TabKey>("projects");
+  const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
+  const [stats, setStats] = useState<StatsData | null>(null);
+  const [indexer, setIndexer] = useState<IndexerStatus | null>(null);
+  const [ready, setReady] = useState<ReadyChecks | null>(null);
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Poll for real backend if available
-  const pollBackend = useCallback(async () => {
+  const [wallet, setWallet] = useState<WalletConnection | null>(null);
+  const [walletError, setWalletError] = useState<string | null>(null);
+
+  const [filterState, setFilterState] = useState<string>("All");
+  const [selected, setSelected] = useState<CampaignDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const loadSummary = useCallback(async () => {
     try {
       const [r, s, i, c] = await Promise.all([
         api.ready(), api.stats(), api.indexer(), api.campaigns(),
@@ -32,973 +88,857 @@ export function Dashboard() {
       setReady(r);
       setStats(s.data);
       setIndexer(i.data);
-      if (c.data && c.data.length > 0) {
-        setCampaigns(c.data);
-      }
-      setIsLiveConnected(true);
-    } catch {
-      setIsLiveConnected(false);
-      // Fallback to rich mock data
-      setCampaigns(MOCK_CAMPAIGNS);
-      setStats(MOCK_STATS);
-      setIndexer(MOCK_INDEXER);
-      setReady(MOCK_READY);
+      setCampaigns(c.data);
+      setConnected(true);
+      setError(null);
+    } catch (e) {
+      setConnected(false);
+      setError((e as Error).message);
     }
   }, []);
 
   useEffect(() => {
-    void pollBackend();
-    const timer = setInterval(() => void pollBackend(), 12000);
+    void loadSummary();
+    const timer = setInterval(() => void loadSummary(), 12_000);
     return () => clearInterval(timer);
-  }, [pollBackend]);
+  }, [loadSummary]);
 
-  const handleOpenDetail = (address: string) => {
-    const found = campaigns.find((c) => c.address === address);
-    if (found) {
-      setSelectedCampaign({
-        ...MOCK_CAMPAIGN_DETAIL,
-        ...found,
-      });
-    } else {
-      setSelectedCampaign(MOCK_CAMPAIGN_DETAIL);
+  useEffect(() => {
+    api.config().then((r) => setConfig(r.data)).catch(() => undefined);
+  }, []);
+
+  const openDetail = useCallback(async (address: string) => {
+    setDetailError(null);
+    try {
+      const d = await api.campaign(address);
+      setSelected({ ...d.data, address });
+      setActiveTab("projects");
+    } catch (e) {
+      setDetailError((e as Error).message);
+    }
+  }, []);
+
+  const connect = async () => {
+    setWalletError(null);
+    try {
+      if (config) await ensureChain(config.chainId);
+      setWallet(await connectWallet());
+      void loadSummary();
+    } catch (e) {
+      setWalletError((e as Error).message);
     }
   };
 
-  const filteredCampaigns = campaigns.filter((c) => {
-    const matchesFilter = filterState === "All" || c.state === filterState;
-    const matchesSearch =
-      (c.title?.toLowerCase() ?? "").includes(searchQuery.toLowerCase()) ||
-      (c.tagline?.toLowerCase() ?? "").includes(searchQuery.toLowerCase()) ||
-      (c.creatorName?.toLowerCase() ?? "").includes(searchQuery.toLowerCase()) ||
-      c.address.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesFilter && matchesSearch;
-  });
+  const connectDemo = async () => {
+    setWalletError(null);
+    try {
+      setWallet(await connectDemoWallet());
+      void loadSummary();
+    } catch (e) {
+      setWalletError((e as Error).message);
+    }
+  };
+
+  const refreshDetail = useCallback(async () => {
+    if (!selected) return;
+    try {
+      const d = await api.campaign(selected.address);
+      setSelected({ ...d.data, address: selected.address });
+      void loadSummary();
+    } catch (e) {
+      setDetailError((e as Error).message);
+    }
+  }, [selected, loadSummary]);
+
+  const filtered = campaigns.filter((c) => filterState === "All" || c.state === filterState);
+  const wrongChain =
+    wallet && config && wallet.chainId !== config.chainId ? config.chainId : null;
 
   return (
-    <div className="shell">
-      {/* ─── Left Sidebar Navigation ─── */}
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <div className="brand-icon">🛡️</div>
-          <div>
-            <div className="brand-name">CrowdTrust</div>
-            <div className="brand-tag">Milestone Escrow Protocol</div>
+    <div className="app">
+      <header className="topbar">
+        <div className="topbar-inner">
+          <div className="brand">
+            <span className="brand-name">CrowdTrust</span>
+            <span className="brand-sub">Milestone escrow · stake-weighted governance</span>
+          </div>
+          <div className="top-status">
+            <span className={`status-dot ${connected ? "ok" : "err"}`} />
+            <span>{connected ? "API connected" : "API offline"}</span>
+            {indexer && (
+              <span className="dim">
+                · chain {indexer.chainId} · block {indexer.confirmedThrough}
+              </span>
+            )}
+            {wallet ? (
+              <span className="wallet-pill" title={wallet.address}>
+                {short(wallet.address)}
+              </span>
+            ) : (
+              <>
+                <button className="btn primary" onClick={() => void connect()}>Connect MetaMask</button>
+                <button className="btn" title="Local-only signing key used by `npx hardhat node` (account #0, 10,000 test ETH)." onClick={() => void connectDemo()}>
+                  Use demo account
+                </button>
+              </>
+            )}
+            <button className="btn" onClick={() => void loadSummary()}>Refresh</button>
           </div>
         </div>
-
-        <div className="nav-section-title">Platform</div>
-        <nav className="nav-menu">
-          <div
-            className={`nav-btn ${activeTab === "campaigns" && !selectedCampaign ? "active" : ""}`}
-            onClick={() => { setActiveTab("campaigns"); setSelectedCampaign(null); }}
-          >
-            <span className="icon">🚀</span>
-            <span>Explore Projects</span>
-            <span className="nav-badge">{campaigns.length}</span>
-          </div>
-
-          <div
-            className={`nav-btn ${activeTab === "howItWorks" ? "active" : ""}`}
-            onClick={() => { setActiveTab("howItWorks"); setSelectedCampaign(null); }}
-          >
-            <span className="icon">📖</span>
-            <span>How Escrow Works</span>
-          </div>
-        </nav>
-
-        <div className="nav-section-title">Research & Trust Engine</div>
-        <nav className="nav-menu">
-          <div
-            className={`nav-btn ${activeTab === "gasEconomics" ? "active" : ""}`}
-            onClick={() => { setActiveTab("gasEconomics"); setSelectedCampaign(null); }}
-          >
-            <span className="icon">⛽</span>
-            <span>L1 vs L2 Gas Costs</span>
-          </div>
-
-          <div
-            className={`nav-btn ${activeTab === "aiRisk" ? "active" : ""}`}
-            onClick={() => { setActiveTab("aiRisk"); setSelectedCampaign(null); }}
-          >
-            <span className="icon">🤖</span>
-            <span>AI Risk Sentinel</span>
-          </div>
-
-          <div
-            className={`nav-btn ${activeTab === "attacks" ? "active" : ""}`}
-            onClick={() => { setActiveTab("attacks"); setSelectedCampaign(null); }}
-          >
-            <span className="icon">⚔️</span>
-            <span>Attack Simulations</span>
-          </div>
-
-          <div
-            className={`nav-btn ${activeTab === "security" ? "active" : ""}`}
-            onClick={() => { setActiveTab("security"); setSelectedCampaign(null); }}
-          >
-            <span className="icon">🔒</span>
-            <span>Security & Audit</span>
-            <span className="nav-badge" style={{ color: "#34d399" }}>0 High</span>
-          </div>
-        </nav>
-
-        <div className="sidebar-footer">
-          <div className="chain-indicator">
-            <span className="live-dot" />
-            <span>Hardhat EVM (Localhost:8545)</span>
-          </div>
-          <div style={{ fontSize: "11px", color: "var(--text-dim)", lineHeight: 1.4 }}>
-            Indexer Block #{indexer?.confirmedThrough ?? 139} · {isLiveConnected ? "🟢 Connected to API" : "📂 Demo Mode"}
-          </div>
-        </div>
-      </aside>
-
-      {/* ─── Main View Area ─── */}
-      <main className="main-wrapper">
-        {/* Top Navbar */}
-        <header className="top-nav">
-          <div className="page-heading">
-            <h2 className="page-title">
-              {activeTab === "campaigns" && (selectedCampaign ? "Project Delivery Tracker" : "Decentralized Crowdfunding Escrow")}
-              {activeTab === "howItWorks" && "The Trust Management Architecture"}
-              {activeTab === "gasEconomics" && "Layer-1 vs Layer-2 Economic Feasibility"}
-              {activeTab === "aiRisk" && "Machine Learning Anomaly & Fraud Sentinel"}
-              {activeTab === "attacks" && "Game-Theoretic Security & Sybil Resistance"}
-              {activeTab === "security" && "Formal Verification & Slither Security Audit"}
-            </h2>
-            <p className="page-subtitle">
-              Milestone-escrow smart contracts with verifiable IPFS evidence, on-chain reputation, and quadratic dispute voting.
-            </p>
-          </div>
-
-          <div className="top-actions">
-            <div className={`system-pill ${ready.ready ? "healthy" : ""}`}>
-              <span>●</span>
-              <span>Smart Contracts Solitary & Active</span>
-            </div>
-            <button className="btn-secondary" onClick={() => void pollBackend()}>
-              ↻ Sync
-            </button>
-          </div>
-        </header>
-
-        {/* ─── "What is this & Why it's showing" Explainer Banner ─── */}
-        {showExplainer && (
-          <div className="why-explainer">
-            <div className="explainer-icon">💡</div>
-            <div className="explainer-content">
-              <h4 className="explainer-title">
-                {activeTab === "campaigns" && "What is this dashboard showing and why does it exist?"}
-                {activeTab === "howItWorks" && "Why does traditional crowdfunding fail and how does escrow fix it?"}
-                {activeTab === "gasEconomics" && "Why did we benchmark gas on Ethereum L1 vs Polygon L2?"}
-                {activeTab === "aiRisk" && "Why are we using Machine Learning to score campaign risk?"}
-                {activeTab === "attacks" && "Why did we simulate Sybil and Collusion attacks?"}
-                {activeTab === "security" && "Why does independent static code analysis matter?"}
-              </h4>
-              <p className="explainer-body">
-                {activeTab === "campaigns" && (
-                  <>
-                    <strong>What it shows:</strong> Active crowdfunding campaigns whose funds are held in an immutable smart contract escrow.
-                    <br />
-                    <strong>Why it matters:</strong> On platforms like Kickstarter or Indiegogo, creators take 100% of the funds upfront. If they disappear, backers lose everything.
-                    Here, funds are <em>locked in smart contracts</em> and only released in portions (tranches) after independent verifiers confirm proof of work.
-                  </>
-                )}
-                {activeTab === "howItWorks" && (
-                  <>
-                    <strong>The Problem:</strong> Trust in Web3 crowdfunding cannot rely on promises.
-                    <br />
-                    <strong>The Solution:</strong> This protocol enforces an automatic fail-closed rule: if creators fail to deliver verifiable evidence or if verifier quorum is not met, the escrow automatically unlocks pro-rata refunds for every backer.
-                  </>
-                )}
-                {activeTab === "gasEconomics" && (
-                  <>
-                    <strong>What it shows:</strong> The exact dollar cost to create campaigns, pledge, and vote on Ethereum Mainnet vs Polygon/Arbitrum Layer 2.
-                    <br />
-                    <strong>Why it matters:</strong> On Ethereum L1, deploying a campaign costs <strong>~$52.41</strong>—which is 10× more than a typical $5 micro-donation! Running on Layer-2 costs <strong>$0.00005</strong>, proving L2 is an economic necessity for public participation.
-                  </>
-                )}
-                {activeTab === "aiRisk" && (
-                  <>
-                    <strong>What it shows:</strong> Real-time risk probability score (0 to 100) generated by Isolation Forest and Random Forest algorithms.
-                    <br />
-                    <strong>Why it matters:</strong> Backers can see an automated anomaly warning <em>before</em> depositing money, flagging unverified creators, sudden target spikes, or unrealistic delivery schedules.
-                  </>
-                )}
-                {activeTab === "attacks" && (
-                  <>
-                    <strong>What it shows:</strong> Empirical stress tests measuring how much capital an attacker needs to overpower honest verifiers.
-                    <br />
-                    <strong>Why it matters:</strong> Proves mathematically that creating fake identities (Sybils) does not work: an attacker must stake <strong>8.0 ETH ($20,000)</strong> of real capital to override 5 honest verifiers, making attacks economically irrational.
-                  </>
-                )}
-                {activeTab === "security" && (
-                  <>
-                    <strong>What it shows:</strong> Static security analysis using Slither (102 automated vulnerability detectors) and test suite coverage.
-                    <br />
-                    <strong>Why it matters:</strong> Two critical fund-drain bugs (H1 dust drain and H2 juror pool drain) were identified and permanently fixed with mathematical regression proofs.
-                  </>
-                )}
-              </p>
-            </div>
+        <nav className="tabs">
+          {([
+            ["projects", "Projects"],
+            ["create", "Create"],
+            ["howItWorks", "How it works"],
+            ["results", "Results"],
+          ] as Array<[TabKey, string]>).map(([key, label]) => (
             <button
-              onClick={() => setShowExplainer(false)}
-              style={{ background: "none", border: "none", color: "var(--text-dim)", cursor: "pointer", fontSize: 16 }}
-              title="Dismiss"
+              key={key}
+              className={`tab ${activeTab === key ? "active" : ""}`}
+              onClick={() => { setActiveTab(key); if (key !== "projects") setSelected(null); }}
             >
-              ✕
+              {label}
             </button>
+          ))}
+        </nav>
+      </header>
+
+      <main className="content">
+        {error && !connected && (
+          <div className="notice">
+            Backend not reachable ({error}). Start it with{" "}
+            <code>cd backend &amp;&amp; npm run dev</code>, then refresh.
+          </div>
+        )}
+        {walletError && <div className="notice">{walletError}</div>}
+        {wrongChain !== null && (
+          <div className="notice warn">
+            Wallet is on chain {wallet?.chainId}; this deployment is on chain {wrongChain}.{" "}
+            <button className="btn" onClick={() => config && void ensureChain(config.chainId)}>Switch chain</button>
           </div>
         )}
 
-        <div className="content-body">
-          {/* TAB 1: CAMPAIGNS (DEFAULT) */}
-          {activeTab === "campaigns" && (
+        {activeTab === "projects" && (
+          selected ? (
+            <CampaignPanel
+              detail={selected}
+              config={config}
+              wallet={wallet}
+              onBack={() => setSelected(null)}
+              onRefresh={() => void refreshDetail()}
+              error={detailError}
+            />
+          ) : (
             <>
-              {selectedCampaign ? (
-                /* Campaign Detail View */
-                <div className="detail-view-container">
-                  <button className="back-link" onClick={() => setSelectedCampaign(null)}>
-                    ← Back to all projects
+              <div className="meta-line">
+                {stats && (
+                  <>
+                    <span>{stats.campaigns} campaigns</span>
+                    <span>·</span>
+                    <span>{formatEth(stats.totalRaisedWei)} pledged</span>
+                    <span>·</span>
+                    <span>{stats.byState?.Active ?? 0} active, {stats.byState?.Completed ?? 0} completed, {stats.byState?.Failed ?? 0} failed</span>
+                  </>
+                )}
+                {connected && ready && !ready.ready && (
+                  <span className="warn">Readiness checks failing</span>
+                )}
+              </div>
+
+              <div className="filter-row">
+                {STATE_FILTERS.map((st) => (
+                  <button
+                    key={st}
+                    className={`btn tab-mini ${filterState === st ? "active" : ""}`}
+                    onClick={() => setFilterState(st)}
+                  >
+                    {st}
                   </button>
+                ))}
+              </div>
 
-                  <div className="project-hero">
-                    <div className="hero-main-row">
-                      <div className="hero-title-group">
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                          <span className={`state-badge state-${selectedCampaign.state.toLowerCase()}`}>
-                            {selectedCampaign.state}
-                          </span>
-                          <span className="category-chip">{selectedCampaign.category ?? "Public Good"}</span>
-                          {selectedCampaign.risk && (
-                            <span className={`risk-tag risk-${selectedCampaign.risk.band.toLowerCase()}`}>
-                              AI Risk: {selectedCampaign.risk.score.toFixed(1)}/100 ({selectedCampaign.risk.band})
-                            </span>
-                          )}
-                        </div>
-                        <h1>{selectedCampaign.title ?? selectedCampaign.address}</h1>
-                        <div className="project-creator">
-                          <span>Lead: <strong>{selectedCampaign.creatorName ?? "Verified Creator"}</strong></span>
-                          <span>•</span>
-                          <span className="contract-address-badge">
-                            Escrow: {selectedCampaign.address.slice(0, 10)}...{selectedCampaign.address.slice(-6)}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div style={{ textAlign: "right" }}>
-                        <div style={{ fontSize: 26, fontVariantNumeric: "tabular-nums", fontWeight: 800 }}>
-                          {formatEth(selectedCampaign.totalContributed)}
-                        </div>
-                        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                          pledged toward {formatEth(selectedCampaign.goalWei)} target
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="funding-progress-block" style={{ borderTop: "none", paddingTop: 0 }}>
-                      <div className="progress-track" style={{ height: 10 }}>
-                        <div
-                          className="progress-fill-bar"
-                          style={{
-                            width: `${Math.min(100, Math.round((Number(BigInt(selectedCampaign.totalContributed)) / Number(BigInt(selectedCampaign.goalWei))) * 100))}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="hero-stats-grid">
-                      <div className="hero-stat-cell">
-                        <span className="label">Released to Creator</span>
-                        <span className="val" style={{ color: "#34d399" }}>
-                          {formatEth(selectedCampaign.totalReleased)} ({(selectedCampaign.releasedBps / 100).toFixed(0)}%)
-                        </span>
-                      </div>
-                      <div className="hero-stat-cell">
-                        <span className="label">Funds in Protected Escrow</span>
-                        <span className="val" style={{ color: "#60a5fa" }}>
-                          {formatEth(BigInt(selectedCampaign.totalContributed) - BigInt(selectedCampaign.totalReleased))}
-                        </span>
-                      </div>
-                      <div className="hero-stat-cell">
-                        <span className="label">Verified Backers</span>
-                        <span className="val">{selectedCampaign.contributors ?? 42}</span>
-                      </div>
-                      <div className="hero-stat-cell">
-                        <span className="label">Delivery Deadline</span>
-                        <span className="val">{formatTime(selectedCampaign.fundingDeadline)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Milestones Delivery Stepper */}
-                  <div className="milestones-card">
-                    <div className="card-section-head">
-                      <div>
-                        <div className="section-label">🎯 Milestone Deliverables & Verification Proofs</div>
-                        <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
-                          Funds are released in tranches only after IPFS proof is uploaded and validated by staked verifiers.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="milestone-stepper">
-                      {(selectedCampaign.milestones as Array<Record<string, unknown>>).map((m, idx) => {
-                        const mState = String(m.state ?? "Pending");
-                        const isVerified = mState === "Verified";
-                        const isSubmitted = mState === "Submitted";
-                        return (
-                          <div
-                            key={idx}
-                            className={`milestone-row ${isVerified ? "verified" : isSubmitted ? "submitted" : "pending"}`}
-                          >
-                            <div className="milestone-num-bubble">
-                              {isVerified ? "✓" : idx + 1}
-                            </div>
-                            <div className="milestone-content">
-                              <div className="milestone-title-bar">
-                                <div className="milestone-name">
-                                  {String(m.title ?? `Milestone ${idx + 1}`)}
-                                </div>
-                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                  <span className={`state-badge ${isVerified ? "state-active" : isSubmitted ? "state-funding" : "state-failed"}`}>
-                                    {mState}
-                                  </span>
-                                  <span className="tranche-badge">
-                                    {(Number(m.trancheBps ?? 0) / 100).toFixed(0)}% Escrow Payout
-                                  </span>
-                                </div>
-                              </div>
-
-                              <div className="milestone-desc">
-                                {String(m.description ?? "Deliverable specifications and automated test verification suites.")}
-                              </div>
-
-                              {Boolean(m.evidenceCID) && (
-                                <div className="proof-box">
-                                  <span>📦 IPFS Proof CID:</span>
-                                  <span className="cid-link">{String(m.evidenceCID)}</span>
-                                  <span style={{ color: "#34d399", fontSize: 11, fontWeight: 700 }}>
-                                    ● Cryptographically Committed
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Verifier Votes Panel */}
-                  <div className="milestones-card">
-                    <div className="card-section-head">
-                      <div>
-                        <div className="section-label">⚖️ Stake-Weighted Verifier Panel Votes</div>
-                        <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
-                          Independent verifiers stake collateral to vote on milestones. If they vote fraudulently, their stake is slashed.
-                        </div>
-                      </div>
-                    </div>
-
-                    <table className="modern-table">
-                      <thead>
-                        <tr>
-                          <th>Milestone</th>
-                          <th>Verifier Address</th>
-                          <th>Decision</th>
-                          <th>Stake Weight</th>
-                          <th>Outcome Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <td>#1 Primitives</td>
-                          <td style={{ fontFamily: "JetBrains Mono" }}>0x3C44...93BC</td>
-                          <td><span className="state-badge state-active">Approve</span></td>
-                          <td>5.0 ETH Stake</td>
-                          <td style={{ color: "#34d399" }}>Settled & Paid</td>
-                        </tr>
-                        <tr>
-                          <td>#1 Primitives</td>
-                          <td style={{ fontFamily: "JetBrains Mono" }}>0x90F7...b906</td>
-                          <td><span className="state-badge state-active">Approve</span></td>
-                          <td>3.5 ETH Stake</td>
-                          <td style={{ color: "#34d399" }}>Settled & Paid</td>
-                        </tr>
-                        <tr>
-                          <td>#2 Offline USB</td>
-                          <td style={{ fontFamily: "JetBrains Mono" }}>0x976E...0aa9</td>
-                          <td><span className="state-badge state-failed">Reject</span></td>
-                          <td>0.8 ETH Stake</td>
-                          <td style={{ color: "#f43f5e" }}>Dissent Slashed (10%)</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+              {filtered.length === 0 ? (
+                <div className="notice">
+                  No campaigns indexed yet. Create one from the Create tab after connecting a wallet.
                 </div>
               ) : (
-                /* Projects Catalog Overview */
-                <>
-                  {/* Top Stats Cards */}
-                  <div className="stats-row">
-                    <div className="stat-box">
-                      <div className="stat-header">
-                        <span className="stat-label">Total Capital Pledged</span>
-                        <span className="stat-tooltip" title="Total ETH pledged across all campaigns">ℹ️</span>
-                      </div>
-                      <div className="stat-num">{formatEth(stats.totalRaisedWei)}</div>
-                      <div className="stat-context positive">
-                        <span>↑ 100% Protected by Smart Escrow</span>
-                      </div>
-                    </div>
-
-                    <div className="stat-box">
-                      <div className="stat-header">
-                        <span className="stat-label">Active Campaigns</span>
-                        <span className="stat-tooltip" title="Projects currently raising or delivering">ℹ️</span>
-                      </div>
-                      <div className="stat-num">{stats.byState?.Active ?? 2}</div>
-                      <div className="stat-context">
-                        <span>{stats.byState?.Funding ?? 2} in funding phase</span>
-                      </div>
-                    </div>
-
-                    <div className="stat-box">
-                      <div className="stat-header">
-                        <span className="stat-label">Successful Deliveries</span>
-                        <span className="stat-tooltip" title="Projects that delivered 100% milestones">ℹ️</span>
-                      </div>
-                      <div className="stat-num">{stats.byState?.Completed ?? 1}</div>
-                      <div className="stat-context positive">
-                        <span>100% Milestone verification approved</span>
-                      </div>
-                    </div>
-
-                    <div className="stat-box">
-                      <div className="stat-header">
-                        <span className="stat-label">Failed / Refunded</span>
-                        <span className="stat-tooltip" title="Projects where backers received pro-rata refunds">ℹ️</span>
-                      </div>
-                      <div className="stat-num">{stats.byState?.Failed ?? 1}</div>
-                      <div className="stat-context" style={{ color: "#f43f5e" }}>
-                        <span>Full backer refunds processed</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Filter and Search Bar */}
-                  <div className="card-section-head">
-                    <div className="filter-tabs">
-                      {["All", "Active", "Funding", "Completed", "Failed"].map((st) => (
-                        <button
-                          key={st}
-                          className={`filter-tab ${filterState === st ? "active" : ""}`}
-                          onClick={() => setFilterState(st)}
-                        >
-                          {st === "All" ? "All Projects" : st}
-                        </button>
-                      ))}
-                    </div>
-
-                    <input
-                      type="text"
-                      className="search-bar"
-                      placeholder="Search by title, creator, or address..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                  </div>
-
-                  {/* Campaign Cards Grid */}
-                  <div className="campaign-grid">
-                    {filteredCampaigns.map((c) => {
-                      const pctFunded = Math.min(
-                        100,
-                        Math.round((Number(BigInt(c.totalContributed)) / Number(BigInt(c.goalWei))) * 100)
-                      );
-                      const isFunded = pctFunded >= 100;
-
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Campaign</th>
+                      <th>State</th>
+                      <th>Raised / Goal</th>
+                      <th>Progress</th>
+                      <th>Released</th>
+                      <th>Risk</th>
+                      <th>Deadline</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((c) => {
+                      const pct = progressPct(c.totalContributed, c.goalWei);
                       return (
-                        <div
-                          key={c.address}
-                          className="project-card"
-                          onClick={() => handleOpenDetail(c.address)}
-                        >
-                          <div className="card-top">
-                            <span className="category-chip">{c.category ?? "Web3"}</span>
-                            <span className={`state-badge state-${c.state.toLowerCase()}`}>{c.state}</span>
-                          </div>
-
-                          <h3 className="project-title">{c.title ?? c.address}</h3>
-                          <div className="project-creator">
-                            <span>By <strong>{c.creatorName ?? "Verified Developer"}</strong></span>
-                          </div>
-
-                          <p className="project-tagline">{c.tagline ?? "Milestone escrow backed campaign."}</p>
-
-                          <div className="funding-progress-block">
-                            <div className="progress-metrics">
-                              <span className="amount-raised">{formatEth(c.totalContributed)}</span>
-                              <span className="amount-goal">{pctFunded}% of {formatEth(c.goalWei)} goal</span>
-                            </div>
-                            <div className="progress-track">
-                              <div
-                                className="progress-fill-bar"
-                                style={{
-                                  width: `${pctFunded}%`,
-                                  background: isFunded
-                                    ? "linear-gradient(90deg, #10b981, #059669)"
-                                    : "var(--brand-gradient)",
-                                }}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="project-card-footer">
-                            <span>
-                              {c.state === "Completed"
-                                ? "✓ 100% Delivered"
-                                : c.state === "Active"
-                                ? `${(c.releasedBps / 100).toFixed(0)}% tranches released`
-                                : "Awaiting milestone funding"}
-                            </span>
-                            {c.risk && (
-                              <span className={`risk-tag risk-${c.risk.band.toLowerCase()}`}>
-                                ● {c.risk.band} Risk
+                        <tr key={c.address} className="clickable" onClick={() => void openDetail(c.address)}>
+                          <td>
+                            <span className="mono">{short(c.address)}</span>
+                          </td>
+                          <td><span className={`pill ${c.state.toLowerCase()}`}>{c.state}</span></td>
+                          <td className="num">
+                            {formatEth(c.totalContributed)} / {formatEth(c.goalWei)}
+                          </td>
+                          <td>
+                            <div className="bar"><div style={{ width: `${Math.min(100, pct)}%` }} /></div>
+                            <span className="dim small">{pct.toFixed(1)}%</span>
+                          </td>
+                          <td className="num">{(c.releasedBps / 100).toFixed(0)}%</td>
+                          <td>
+                            {c.risk ? (
+                              <span className={`risk ${c.risk.band.toLowerCase()}`}>
+                                {c.risk.score.toFixed(1)} ({c.risk.band})
                               </span>
+                            ) : (
+                              <span className="dim">—</span>
                             )}
-                          </div>
-                        </div>
+                          </td>
+                          <td className="small">{formatTime(c.fundingDeadline)}</td>
+                        </tr>
                       );
                     })}
-                  </div>
-                </>
+                  </tbody>
+                </table>
               )}
             </>
-          )}
+          )
+        )}
 
-          {/* TAB 2: HOW IT WORKS (THEORY & ARCHITECTURE) */}
-          {activeTab === "howItWorks" && (
-            <div className="detail-view-container">
-              <div className="info-callout">
-                <div className="callout-header">
-                  <span style={{ fontSize: 24 }}>🏗️</span>
-                  <h3>Why Trust Management in Crowdfunding?</h3>
-                </div>
-                <p className="callout-desc">
-                  Traditional platforms (Kickstarter, GoFundMe) operate under an <strong>All-or-Nothing (AoN)</strong> model:
-                  once the dollar goal is reached, the platform hands 100% of the funds to the creator in a lump sum.
-                  Backers bear 100% of delivery risk, and if the creator defaults or abandons the project, backers have zero recourse.
-                </p>
+        {activeTab === "create" && (
+          <CreateCampaign
+            config={config}
+            wallet={wallet}
+            onCreated={(address) => void openDetail(address)}
+          />
+        )}
 
-                <div className="two-col-why">
-                  <div className="why-card">
-                    <div className="why-tag">Traditional Crowdfunding</div>
-                    <p className="why-text">
-                      ❌ Lump sum payout upfront before anything is built.<br />
-                      ❌ Opaque creator promises with no proof.<br />
-                      ❌ When projects fail, backers lose 100% of money.<br />
-                      ❌ Zero dispute mechanism on-chain.
-                    </p>
-                  </div>
-                  <div className="why-card" style={{ borderColor: "rgba(16, 185, 129, 0.3)" }}>
-                    <div className="why-tag" style={{ color: "#34d399" }}>CrowdTrust Smart Escrow</div>
-                    <p className="why-text">
-                      ✅ <strong>Milestone Tranches:</strong> Escrow releases funds in phases (e.g. 20%, 30%).<br />
-                      ✅ <strong>Cryptographic IPFS Proof:</strong> Creator must upload code/hardware deliverables.<br />
-                      ✅ <strong>Fail-Closed Quorum:</strong> If verifiers reject or don't show up, money fails closed.<br />
-                      ✅ <strong>Automated Pro-Rata Refunds:</strong> Backers get unreleased funds back directly!
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="milestones-card">
-                <div className="section-label" style={{ marginBottom: 14 }}>
-                  🔄 Step-by-Step Capital Flow
-                </div>
-                <div className="milestone-stepper">
-                  <div className="milestone-row verified">
-                    <div className="milestone-num-bubble">1</div>
-                    <div className="milestone-content">
-                      <div className="milestone-name">Creator Defines Milestones & Targets</div>
-                      <div className="milestone-desc">
-                        During campaign creation, milestones (e.g., Prototype, Beta, Release) and tranche percentages are committed to the contract.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="milestone-row verified">
-                    <div className="milestone-num-bubble">2</div>
-                    <div className="milestone-content">
-                      <div className="milestone-name">Backers Pledge Funds Into Smart Contract Escrow</div>
-                      <div className="milestone-desc">
-                        ETH is locked in the Campaign contract. The creator cannot touch a single wei until milestone delivery is verified.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="milestone-row submitted">
-                    <div className="milestone-num-bubble">3</div>
-                    <div className="milestone-content">
-                      <div className="milestone-name">Creator Submits IPFS Delivery Evidence</div>
-                      <div className="milestone-desc">
-                        When work is completed, the creator pins documents, source code, or hardware schematics to IPFS and submits the keccak256 hash on-chain.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="milestone-row pending">
-                    <div className="milestone-num-bubble">4</div>
-                    <div className="milestone-content">
-                      <div className="milestone-name">Staked Verifier Panel Votes & Outcome Resolution</div>
-                      <div className="milestone-desc">
-                        Independent verifiers review the IPFS evidence and vote by stake. If approved, the next tranche is released to the creator. If rejected or disputed, the remaining pot is unlocked for backer refunds!
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 3: GAS & L1 VS L2 ECONOMICS */}
-          {activeTab === "gasEconomics" && (
-            <div className="detail-view-container">
-              <div className="info-callout">
-                <div className="callout-header">
-                  <span style={{ fontSize: 24 }}>⛽</span>
-                  <h3>Why Layer-2 is an Absolute Necessity for Web3 Crowdfunding</h3>
-                </div>
-                <p className="callout-desc">
-                  We executed real transactions on Hardhat EVM (Solidity 0.8.20, optimizer 200 runs) and priced them under realistic network conditions:
-                  <strong>Ethereum L1 Sepolia</strong> (10 gwei, $2,500/ETH) vs <strong>Polygon Amoy L2</strong> (0.05 gwei, $0.50/MATIC).
-                </p>
-
-                <div className="two-col-why">
-                  <div className="why-card" style={{ borderColor: "rgba(244, 63, 94, 0.3)" }}>
-                    <div className="why-tag" style={{ color: "#f43f5e" }}>Ethereum L1 Mainnet: Unviable</div>
-                    <p className="why-text">
-                      Creating a campaign costs <strong>$52.41</strong>. A $5 contribution incurs a <strong>$1.02 (20.4%)</strong> gas fee!
-                      Milestone evidence submission costs <strong>$4.09</strong>. L1 gas fees make small projects and micro-donations completely unfeasible.
-                    </p>
-                  </div>
-                  <div className="why-card" style={{ borderColor: "rgba(16, 185, 129, 0.3)" }}>
-                    <div className="why-tag" style={{ color: "#34d399" }}>Polygon Amoy / Arbitrum L2: Viable</div>
-                    <p className="why-text">
-                      Creating a campaign costs <strong>$0.000052</strong>. Making a pledge costs <strong>$0.000001</strong>.
-                      Execution is <strong>~1,000,000× cheaper</strong> in real USD terms, allowing thousands of backers to participate without gas penalties.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="milestones-card">
-                <div className="section-label" style={{ marginBottom: 14 }}>
-                  📊 Empirical Gas Benchmarks Table (5 Runs Sampled)
-                </div>
-                <table className="modern-table">
-                  <thead>
-                    <tr>
-                      <th>Smart Contract Operation</th>
-                      <th>Median Gas</th>
-                      <th>Ethereum L1 Cost (USD)</th>
-                      <th>Polygon L2 Cost (USD)</th>
-                      <th>% of a $5 Contribution</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td><strong>CampaignFactory.createCampaign</strong></td>
-                      <td>2,096,539</td>
-                      <td style={{ color: "#f43f5e", fontWeight: 700 }}>$52.41</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>$0.000052</td>
-                      <td>1,048.3% (L1) vs 0.001% (L2)</td>
-                    </tr>
-                    <tr>
-                      <td><strong>Campaign.submitEvidence</strong></td>
-                      <td>163,749</td>
-                      <td style={{ color: "#f43f5e" }}>$4.09</td>
-                      <td style={{ color: "#34d399" }}>$0.000004</td>
-                      <td>81.9% (L1) vs 0.000% (L2)</td>
-                    </tr>
-                    <tr>
-                      <td><strong>Campaign.resolveMilestone</strong></td>
-                      <td>157,543</td>
-                      <td style={{ color: "#f43f5e" }}>$3.94</td>
-                      <td style={{ color: "#34d399" }}>$0.000004</td>
-                      <td>78.8% (L1) vs 0.000% (L2)</td>
-                    </tr>
-                    <tr>
-                      <td><strong>MilestoneVerifier.castVote</strong></td>
-                      <td>97,157</td>
-                      <td style={{ color: "#f43f5e" }}>$2.43</td>
-                      <td style={{ color: "#34d399" }}>$0.000002</td>
-                      <td>48.6% (L1) vs 0.000% (L2)</td>
-                    </tr>
-                    <tr>
-                      <td><strong>Campaign.claimRefund</strong></td>
-                      <td>79,156</td>
-                      <td style={{ color: "#f43f5e" }}>$1.98</td>
-                      <td style={{ color: "#34d399" }}>$0.000002</td>
-                      <td>39.6% (L1) vs 0.000% (L2)</td>
-                    </tr>
-                    <tr>
-                      <td><strong>Campaign.contribute (Initial backer)</strong></td>
-                      <td>40,707</td>
-                      <td style={{ color: "#f43f5e" }}>$1.02</td>
-                      <td style={{ color: "#34d399" }}>$0.000001</td>
-                      <td>20.4% (L1) vs 0.000% (L2)</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 4: AI RISK SENTINEL */}
-          {activeTab === "aiRisk" && (
-            <div className="detail-view-container">
-              <div className="info-callout">
-                <div className="callout-header">
-                  <span style={{ fontSize: 24 }}>🤖</span>
-                  <h3>Why Machine Learning Anomaly Detection?</h3>
-                </div>
-                <p className="callout-desc">
-                  Smart contracts can enforce rules, but they cannot assess whether a creator is attempting fraud until after deadlines fail.
-                  Our Python ML Sentinel scans campaigns at creation and throughout their lifecycle, calculating a continuous Risk Score from 0 to 100 based on historical creator track record, target velocity, and milestone feasibility.
-                </p>
-
-                <div className="two-col-why">
-                  <div className="why-card">
-                    <div className="why-tag">Supervised Random Forest (F1 = 0.977)</div>
-                    <p className="why-text">
-                      High precision (97.3%) and recall (98.0%) on campaigns with established feature profiles.
-                      Detects known scam patterns such as disproportionate early funding from fresh addresses.
-                    </p>
-                  </div>
-                  <div className="why-card">
-                    <div className="why-tag">Unsupervised Isolation Forest (F1 = 0.593)</div>
-                    <p className="why-text">
-                      <strong>Cold-Start Sentinel:</strong> Operates without requiring prior fraud labels.
-                      It flags completely novel or anomalous campaign structures that deviate from honest baseline distributions.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="milestones-card">
-                <div className="section-label" style={{ marginBottom: 14 }}>
-                  🧪 ML Model Benchmark Results (Evaluated on N = 1,200 Test Samples, 4% Injected Noise)
-                </div>
-                <table className="modern-table">
-                  <thead>
-                    <tr>
-                      <th>Algorithm</th>
-                      <th>Learning Paradigm</th>
-                      <th>Precision</th>
-                      <th>Recall</th>
-                      <th>F1-Score</th>
-                      <th>ROC-AUC</th>
-                      <th>Operational Purpose</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td><strong>Random Forest</strong></td>
-                      <td>Supervised Ensemble</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>97.3%</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>98.0%</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>0.977</td>
-                      <td>0.998</td>
-                      <td>Primary automated badge scorer for established patterns.</td>
-                    </tr>
-                    <tr>
-                      <td><strong>Logistic Regression</strong></td>
-                      <td>Linear Baseline</td>
-                      <td>91.8%</td>
-                      <td>92.4%</td>
-                      <td>0.921</td>
-                      <td>0.985</td>
-                      <td>Fast, interpretable baseline for linear feature boundaries.</td>
-                    </tr>
-                    <tr>
-                      <td><strong>Isolation Forest</strong></td>
-                      <td>Unsupervised Anomaly</td>
-                      <td style={{ color: "#f59e0b" }}>59.3%</td>
-                      <td style={{ color: "#f59e0b" }}>59.4%</td>
-                      <td style={{ color: "#f59e0b" }}>0.593</td>
-                      <td>0.661</td>
-                      <td>Cold-start anomaly detection for brand-new creators without history.</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 5: ATTACK SIMULATIONS */}
-          {activeTab === "attacks" && (
-            <div className="detail-view-container">
-              <div className="info-callout">
-                <div className="callout-header">
-                  <span style={{ fontSize: 24 }}>⚔️</span>
-                  <h3>Why Game-Theoretic Attack Simulations?</h3>
-                </div>
-                <p className="callout-desc">
-                  Decentralized voting mechanisms are susceptible to Sybil attacks (creating 1,000 fake accounts) and Cartels (bribing verifiers).
-                  We executed simulated economic attacks on the contracts to prove that the protocol makes attacks financially negative.
-                </p>
-              </div>
-
-              <div className="milestones-card">
-                <div className="section-label" style={{ marginBottom: 14 }}>
-                  🛡️ Simulated Threat Scenarios & Outcomes
-                </div>
-                <div className="milestone-stepper">
-                  <div className="milestone-row verified">
-                    <div className="milestone-num-bubble">A</div>
-                    <div className="milestone-content">
-                      <div className="milestone-title-bar">
-                        <div className="milestone-name">Sybil Identity Farming on Verifier Quorum</div>
-                        <span className="state-badge state-active">Attack Thwarted</span>
-                      </div>
-                      <div className="milestone-desc">
-                        <strong>Scenario:</strong> 5 honest verifiers reject deficient work. Attacker creates N funded Sybil accounts (1.0 ETH each) to force approval.<br />
-                        <strong>Finding:</strong> Attacker needed <strong>8 separate funded identities (8.0 ETH = $20,000)</strong> to flip the threshold. Because votes are weighted by slashable stake, identity count alone confers zero leverage.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="milestone-row verified">
-                    <div className="milestone-num-bubble">B</div>
-                    <div className="milestone-content">
-                      <div className="milestone-title-bar">
-                        <div className="milestone-name">Creator & Verifier Bribery Collusion</div>
-                        <span className="state-badge state-active">Collusion Defeated</span>
-                      </div>
-                      <div className="milestone-desc">
-                        <strong>Scenario:</strong> Creator colludes with 2 verifiers against 3 honest verifiers to release unearned funds.<br />
-                        <strong>Finding:</strong> 3 honest verifiers (3 ETH) outvoted 2 colluders (2 ETH). <strong>0 wei released</strong>. The 2 colluders were slashed <strong>0.2 ETH each</strong>, resulting in negative expected utility.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="milestone-row verified">
-                    <div className="milestone-num-bubble">C</div>
-                    <div className="milestone-content">
-                      <div className="milestone-title-bar">
-                        <div className="milestone-name">Dispute Spam / Denial of Service Griefing</div>
-                        <span className="state-badge state-funding">Griefing Bounded</span>
-                      </div>
-                      <div className="milestone-desc">
-                        <strong>Scenario:</strong> Malicious backer raises rapid consecutive disputes to lock a creator's milestones permanently.<br />
-                        <strong>Finding:</strong> 1st dispute opened; 2 subsequent attempts immediately reverted with <code>CooldownActive</code>. The attacker had to lock <strong>0.05 ETH</strong> which gets slashed if baseless.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 6: SECURITY & AUDIT */}
-          {activeTab === "security" && (
-            <div className="detail-view-container">
-              <div className="info-callout">
-                <div className="callout-header">
-                  <span style={{ fontSize: 24 }}>🔒</span>
-                  <h3>Slither Static Analysis & Vulnerability Remediation</h3>
-                </div>
-                <p className="callout-desc">
-                  Smart contracts handling financial escrow must be formally audited.
-                  We ran Trail of Bits' <strong>Slither 0.11.6</strong> across 102 automated detectors. Two real High-severity fund-drain vulnerabilities were caught and completely fixed.
-                </p>
-              </div>
-
-              <div className="two-col-why">
-                <div className="why-card" style={{ borderColor: "rgba(16, 185, 129, 0.3)" }}>
-                  <div className="why-tag" style={{ color: "#34d399" }}>Fixed: H1 (arbitrary-send-eth)</div>
-                  <p className="why-text">
-                    <strong>Bug:</strong> <code>Campaign.sweepDust(address)</code> accepted a caller-supplied address, allowing an attacker to sweep integer rounding dust to themselves.<br />
-                    <strong>Fix:</strong> Removed the parameter. The destination is now an <code>immutable treasury</code> set in the constructor. Verified by regression tests.
-                  </p>
-                </div>
-
-                <div className="why-card" style={{ borderColor: "rgba(16, 185, 129, 0.3)" }}>
-                  <div className="why-tag" style={{ color: "#34d399" }}>Fixed: H2 (reentrancy-eth & pool drain)</div>
-                  <p className="why-text">
-                    <strong>Bug:</strong> <code>DisputeResolution.settleJuror</code> had a Checks-Effects-Interactions violation and paid a flat 1% of the <em>entire global bond pool</em> per juror.<br />
-                    <strong>Fix:</strong> Added OpenZeppelin <code>ReentrancyGuard</code>, strict CEI ordering, and limited payouts to 50% of the specific dispute's bond divided pro-rata by weight.
-                  </p>
-                </div>
-              </div>
-
-              <div className="milestones-card" style={{ marginTop: 20 }}>
-                <div className="section-label" style={{ marginBottom: 14 }}>
-                  ✅ Smart Contract Test Suite & Code Coverage Audit (103 Tests Passing)
-                </div>
-                <table className="modern-table">
-                  <thead>
-                    <tr>
-                      <th>Contract Name</th>
-                      <th>Test Suite File</th>
-                      <th>Tests Passed</th>
-                      <th>Line Coverage</th>
-                      <th>Branch Coverage</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td><strong>Campaign.sol</strong></td>
-                      <td>test/Campaign.lifecycle.test.ts</td>
-                      <td>26 tests</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>89.2%</td>
-                      <td>74.2%</td>
-                    </tr>
-                    <tr>
-                      <td><strong>DisputeResolution.sol</strong></td>
-                      <td>test/DisputeResolution.test.ts</td>
-                      <td>29 tests</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>96.3%</td>
-                      <td>82.9%</td>
-                    </tr>
-                    <tr>
-                      <td><strong>CampaignFactory.sol</strong></td>
-                      <td>test/CampaignFactory.test.ts</td>
-                      <td>5 tests</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>96.3%</td>
-                      <td>83.3%</td>
-                    </tr>
-                    <tr>
-                      <td><strong>ReputationRegistry.sol</strong></td>
-                      <td>test/ReputationRegistry.test.ts</td>
-                      <td>10 tests</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>94.8%</td>
-                      <td>81.8%</td>
-                    </tr>
-                    <tr>
-                      <td><strong>MilestoneVerifier.sol</strong></td>
-                      <td>test/MilestoneVerifier.test.ts</td>
-                      <td>23 tests</td>
-                      <td style={{ color: "#34d399", fontWeight: 700 }}>83.9%</td>
-                      <td>71.0%</td>
-                    </tr>
-                    <tr style={{ background: "rgba(255, 255, 255, 0.04)", fontWeight: 700 }}>
-                      <td><strong>Total Protocol Suite</strong></td>
-                      <td>10 Hardhat Suites</td>
-                      <td>103 Passing</td>
-                      <td style={{ color: "#60a5fa" }}>88.7% Lines</td>
-                      <td>75.6% Branches</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
+        {activeTab === "howItWorks" && <HowItWorks />}
+        {activeTab === "results" && <Results />}
       </main>
+
+      <footer className="footer">
+        {config ? `Chain ${config.chainId} · evidence: ${config.evidence.provider}` : "Loading configuration"}
+        {" · "}API <code>{api.base}</code>
+      </footer>
     </div>
+  );
+}
+
+interface CampaignPanelProps {
+  detail: CampaignDetail;
+  config: AppConfig | null;
+  wallet: WalletConnection | null;
+  onBack: () => void;
+  onRefresh: () => void;
+  error: string | null;
+}
+
+function CampaignPanel({ detail, config, wallet, onBack, onRefresh, error }: CampaignPanelProps) {
+  const pct = progressPct(detail.totalContributed, detail.goalWei);
+  const isCreator = Boolean(wallet && wallet.address.toLowerCase() === detail.creator.toLowerCase());
+  const [amount, setAmount] = useState("1");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [bond, setBond] = useState<bigint | null>(null);
+
+  useEffect(() => {
+    if (!config?.contracts.disputes || !wallet) return;
+    disputeContract(config.contracts.disputes, wallet.signer)
+      .disputeBond()
+      .then((b: bigint) => setBond(b))
+      .catch(() => undefined);
+  }, [config, wallet]);
+
+  const run = async (label: string, action: () => Promise<unknown>) => {
+    setBusy(label);
+    setMessage(null);
+    setActionError(null);
+    try {
+      const tx = (await action()) as { hash?: string; wait?: () => Promise<unknown> };
+      if (tx?.wait) await tx.wait();
+      setMessage(`${label} confirmed${tx?.hash ? ` (${tx.hash.slice(0, 12)}…)` : ""}.`);
+      onRefresh();
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const contribute = async () => {
+    if (!wallet) return;
+    await run("Contribution", () =>
+      campaignContract(detail.address, wallet.signer).contribute({ value: parseEther(amount) })
+    );
+  };
+
+  const submitEvidence = async (index: number, file: File) => {
+    if (!wallet) return;
+    await run(`Evidence for milestone ${index + 1}`, async () => {
+      const upload = await api.uploadEvidence(file);
+      const digest = await hashFile(file);
+      return campaignContract(detail.address, wallet.signer).submitEvidence(
+        index,
+        upload.data.cid,
+        digest
+      );
+    });
+  };
+
+  const vote = async (index: number, choice: 0 | 1) => {
+    if (!wallet || !config?.contracts.verifier) return;
+    await run(`${choice === 1 ? "Approval" : "Rejection"} vote`, () =>
+      verifierContract(config.contracts.verifier!, wallet.signer).castVote(
+        detail.address,
+        index,
+        choice
+      )
+    );
+  };
+
+  const resolve = async (index: number) => {
+    if (!wallet) return;
+    await run(`Resolve milestone ${index + 1}`, () =>
+      campaignContract(detail.address, wallet.signer).resolveMilestone(index)
+    );
+  };
+
+  const raiseDispute = async (index: number) => {
+    if (!wallet || !config?.contracts.disputes || bond === null) return;
+    await run(`Dispute milestone ${index + 1}`, () =>
+      disputeContract(config.contracts.disputes!, wallet.signer).raiseDispute(
+        detail.address,
+        index,
+        { value: bond }
+      )
+    );
+  };
+
+  const resolveDispute = async (key: string) => {
+    if (!wallet || !config?.contracts.disputes) return;
+    await run("Resolve dispute", () =>
+      disputeContract(config.contracts.disputes!, wallet.signer).resolve(key)
+    );
+  };
+
+  const claimRefund = async () => {
+    if (!wallet) return;
+    await run("Refund claim", () => campaignContract(detail.address, wallet.signer).claimRefund());
+  };
+
+  const claimCreator = async () => {
+    if (!wallet) return;
+    await run("Creator withdrawal", () =>
+      campaignContract(detail.address, wallet.signer).claimCreatorBalance()
+    );
+  };
+
+  return (
+    <section>
+      <button className="btn" onClick={onBack}>← Back to projects</button>
+      {error && <div className="notice">Could not load full detail: {error}</div>}
+
+      <h2 className="mono title">{detail.address}</h2>
+      <div className="meta-line">
+        <span className={`pill ${detail.state.toLowerCase()}`}>{detail.state}</span>
+        {detail.risk && (
+          <span className={`risk ${detail.risk.band.toLowerCase()}`}>
+            risk {detail.risk.score.toFixed(1)} ({detail.risk.band})
+          </span>
+        )}
+        {isCreator && <span className="pill creator">you are the creator</span>}
+      </div>
+
+      <div className="bar tall"><div style={{ width: `${Math.min(100, pct)}%` }} /></div>
+
+      <table className="kv">
+        <tbody>
+          <tr><th>Creator</th><td className="mono">{detail.creator}</td></tr>
+          <tr><th>Goal</th><td>{formatEth(detail.goalWei)}</td></tr>
+          <tr><th>Raised</th><td>{formatEth(detail.totalContributed)} ({pct.toFixed(1)}%)</td></tr>
+          <tr><th>Released</th><td>{formatEth(detail.totalReleased)} ({(detail.releasedBps / 100).toFixed(0)}%)</td></tr>
+          <tr><th>Contributors</th><td>{detail.contributors ?? "—"}</td></tr>
+          <tr><th>Funding deadline</th><td>{formatTime(detail.fundingDeadline)}</td></tr>
+        </tbody>
+      </table>
+
+      <div className="actions-panel">
+        <h3>Actions</h3>
+        {!wallet ? (
+          <p className="dim">Connect MetaMask to contribute, submit evidence, vote, or resolve.</p>
+        ) : (
+          <>
+            <div className="action-row">
+              <label>Contribute</label>
+              <input className="input" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <span className="dim">ETH</span>
+              <button className="btn primary" disabled={busy !== null} onClick={() => void contribute()}>
+                {busy === "Contribution" ? "Sending…" : "Contribute"}
+              </button>
+            </div>
+            <div className="action-row">
+              <button
+                className="btn"
+                disabled={busy !== null || detail.state !== "Failed"}
+                onClick={() => void claimRefund()}
+              >
+                Claim refund
+              </button>
+              <button
+                className="btn"
+                disabled={busy !== null || !isCreator}
+                onClick={() => void claimCreator()}
+              >
+                Withdraw creator balance
+              </button>
+            </div>
+            {bond !== null && (
+              <p className="dim small">Dispute bond: {formatEth(bond)} per dispute.</p>
+            )}
+          </>
+        )}
+        {message && <div className="notice ok">{message}</div>}
+        {actionError && <div className="notice">{actionError}</div>}
+      </div>
+
+      <h3>Milestones</h3>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>State</th>
+            <th>Tranche</th>
+            <th>Evidence</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(detail.milestones as unknown[]).map((m, idx) => {
+            const state = milestoneState(m);
+            const bps = rowField(m, "trancheBps", "tranche_bps");
+            const cid = rowField(m, "evidenceCID", "evidence_cid");
+            const submitted = state === "Submitted";
+            return (
+              <tr key={idx}>
+                <td>{idx + 1}</td>
+                <td><span className={`pill ${state.toLowerCase()}`}>{state}</span></td>
+                <td className="num">{bps ? `${(Number(bps) / 100).toFixed(0)}%` : "—"}</td>
+                <td className="mono small">
+                  {cid ? (
+                    <a href={`${api.base}/api/evidence/${cid}`} target="_blank" rel="noreferrer">
+                      {cid.slice(0, 14)}…
+                    </a>
+                  ) : "—"}
+                </td>
+                <td className="action-cell">
+                  {wallet && detail.state === "Active" && (state === "Pending" || state === "Rejected") && (
+                    <>
+                      <label className="btn file-btn">
+                        {isCreator ? "Upload evidence" : "Creator upload"}
+                        <input
+                          type="file"
+                          hidden
+                          disabled={!isCreator || busy !== null}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) void submitEvidence(idx, file);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                    </>
+                  )}
+                  {wallet && submitted && config?.contracts.verifier && (
+                    <>
+                      <button className="btn" disabled={busy !== null} onClick={() => void vote(idx, 1)}>Approve</button>
+                      <button className="btn" disabled={busy !== null} onClick={() => void vote(idx, 0)}>Reject</button>
+                      <button className="btn" disabled={busy !== null} onClick={() => void resolve(idx)}>Resolve</button>
+                    </>
+                  )}
+                  {wallet && submitted && config?.contracts.disputes && bond !== null && (
+                    <button className="btn" disabled={busy !== null} onClick={() => void raiseDispute(idx)}>
+                      Dispute
+                    </button>
+                  )}
+                  {state === "Rejected" && wallet && config?.contracts.disputes && bond !== null && (
+                    <button className="btn" disabled={busy !== null} onClick={() => void raiseDispute(idx)}>
+                      Appeal
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+          {detail.milestones.length === 0 && (
+            <tr><td colSpan={5} className="dim">No milestones indexed.</td></tr>
+          )}
+        </tbody>
+      </table>
+
+      <h3>Disputes</h3>
+      <table className="data-table">
+        <thead>
+          <tr><th>Key</th><th>Milestone</th><th>State</th><th>Outcome</th><th>Deadline</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          {(detail.disputes as unknown[]).map((d, i) => {
+            const key = rowField(d, "dispute_key", "disputeKey");
+            const voting = rowField(d, "state") === "Voting";
+            return (
+              <tr key={key || i}>
+                <td className="mono small">{key ? `${key.slice(0, 12)}…` : "—"}</td>
+                <td>{rowField(d, "milestone_index", "milestoneIndex")}</td>
+                <td>{rowField(d, "state") || "—"}</td>
+                <td>{rowField(d, "outcome") || "—"}</td>
+                <td className="small">{formatTime(Number(rowField(d, "vote_deadline", "voteDeadline") || 0))}</td>
+                <td>
+                  {wallet && voting && config?.contracts.disputes && (
+                    <button className="btn" disabled={busy !== null} onClick={() => void resolveDispute(key)}>
+                      Resolve
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+          {detail.disputes.length === 0 && <tr><td colSpan={6} className="dim">No disputes.</td></tr>}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function CreateCampaign({
+  config,
+  wallet,
+  onCreated,
+}: {
+  config: AppConfig | null;
+  wallet: WalletConnection | null;
+  onCreated: (address: string) => void;
+}) {
+  const [goal, setGoal] = useState("10");
+  const [fundingDays, setFundingDays] = useState("30");
+  const [titles, setTitles] = useState(["Prototype", "Production", "Delivery"]);
+  const [cids, setCids] = useState(["spec-0", "spec-1", "spec-2"]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const create = async () => {
+    if (!wallet || !config?.contracts.factory) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const block = await wallet.provider.getBlock("latest");
+      const now = block?.timestamp ?? Math.floor(Date.now() / 1000);
+      const fundingDeadline = now + Number(fundingDays) * 86_400;
+      const params = {
+        goal: parseEther(goal),
+        fundingDeadline,
+        trancheBps: [4_000, 3_000, 3_000],
+        descriptionHashes: titles.map((t) => keccak256(toUtf8Bytes(t))),
+        specificationCIDs: cids,
+        milestoneDeadlines: [10, 20, 30].map((d) => fundingDeadline + d * 86_400),
+        treasury: "0x0000000000000000000000000000000000000000",
+      };
+      const factory = factoryContract(config.contracts.factory, wallet.signer);
+      const tx = await factory.createCampaign(params);
+      await tx.wait();
+      const count = (await factory.campaignCount()) as bigint;
+      const address = (await factory.campaignAt(count - 1n)) as string;
+      setMessage(`Campaign deployed at ${address}. The indexer will pick it up within one poll.`);
+      window.setTimeout(() => onCreated(address), 6_000);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prose">
+      <h2>Create a campaign</h2>
+      <p>
+        This submits a real transaction to <code>CampaignFactory</code> from your connected wallet.
+        Milestones use a 40 / 30 / 30 tranche schedule and deadlines 10, 20 and 30 days after funding
+        closes. Description hashes are computed in the browser; specification CIDs can be any string
+        (use a real IPFS CID for production).
+      </p>
+      <div className="form-grid">
+        <label>Goal (ETH)<input className="input" value={goal} onChange={(e) => setGoal(e.target.value)} /></label>
+        <label>Funding window (days)<input className="input" value={fundingDays} onChange={(e) => setFundingDays(e.target.value)} /></label>
+      </div>
+      {titles.map((title, i) => (
+        <div className="form-grid" key={i}>
+          <label>Milestone {i + 1} title
+            <input className="input" value={title} onChange={(e) => setTitles(titles.map((t, j) => (j === i ? e.target.value : t)))} />
+          </label>
+          <label>Specification CID
+            <input className="input" value={cids[i]} onChange={(e) => setCids(cids.map((c, j) => (j === i ? e.target.value : c)))} />
+          </label>
+        </div>
+      ))}
+      <button className="btn primary" disabled={!wallet || busy || !config?.contracts.factory} onClick={() => void create()}>
+        {busy ? "Deploying…" : "Create campaign"}
+      </button>
+      {!wallet && <p className="dim">Connect MetaMask first.</p>}
+      {message && <div className="notice ok">{message}</div>}
+      {error && <div className="notice">{error}</div>}
+    </section>
+  );
+}
+
+function HowItWorks() {
+  return (
+    <section className="prose">
+      <h2>How it works</h2>
+      <p>
+        On traditional platforms a campaign that reaches its goal pays the creator everything at once.
+        If the project is abandoned, backers have no recourse. This system moves the money into a smart
+        contract and releases it incrementally, only on verified delivery.
+      </p>
+      <ol>
+        <li>
+          <strong>Create.</strong> The creator defines milestones, each with a tranche percentage, a
+          deadline and a specification. Factory-deployed campaign contracts hold the funds in escrow.
+        </li>
+        <li>
+          <strong>Fund.</strong> Backers send ETH to the campaign contract. The creator cannot withdraw
+          pledged funds directly.
+        </li>
+        <li>
+          <strong>Prove.</strong> For each milestone the creator uploads evidence (IPFS when configured,
+          otherwise a local content-addressed store clearly labelled as such) and submits the CID and
+          the keccak256 digest on chain.
+        </li>
+        <li>
+          <strong>Verify.</strong> Registered verifiers, each holding slashable stake, vote during the
+          voting window. Approval releases the tranche; rejection or missed quorum fails closed.
+        </li>
+        <li>
+          <strong>Resolve.</strong> A backer can raise a bonded dispute. Jurors vote stake-weighted; the
+          verdict is tally-derived and permissionlessly settled, then applied to the escrow. Outcomes
+          update on-chain reputation.
+        </li>
+      </ol>
+      <p>
+        DIDs use the <code>did:ethr</code> identifier shape; verifiable credentials are signed JSON
+        documents whose hashes are attested by <code>CredentialRegistry</code>. No personal data is
+        written on chain.
+      </p>
+    </section>
+  );
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function Results() {
+  const [data, setData] = useState<ResearchResults | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.research().then((r) => setData(r.data)).catch((e) => setError((e as Error).message));
+  }, []);
+
+  const benchmarkRows = useMemo(() => {
+    if (!data?.benchmarks) return [];
+    const byOp = new Map<string, number[]>();
+    for (const sample of data.benchmarks.gas) {
+      const list = byOp.get(sample.operation) ?? [];
+      list.push(Number(sample.gasUsed));
+      byOp.set(sample.operation, list);
+    }
+    return [...byOp.entries()].map(([operation, values]) => ({
+      operation,
+      samples: values.length,
+      medianGas: Math.round(median(values)),
+    }));
+  }, [data]);
+
+  if (error) return <section className="prose"><div className="notice">Results unavailable: {error}</div></section>;
+  if (!data) return <section className="prose"><p className="dim">Loading measured results…</p></section>;
+
+  return (
+    <section className="prose">
+      <h2>Measured results</h2>
+      <p className="dim small">
+        Every table below is rendered from artifact JSON served by the backend. Missing artifacts are
+        shown as unavailable, never replaced with remembered values.
+      </p>
+
+      <h3>Gas benchmarks</h3>
+      {data.benchmarks ? (
+        <>
+          <p className="small">
+            {data.benchmarks.network} · {data.benchmarks.simulated ? "SIMULATED network conditions (local EVM)" : "measured"} ·{" "}
+            {new Date(data.benchmarks.measuredAt).toLocaleString()}
+          </p>
+          <table className="data-table">
+            <thead><tr><th>Operation</th><th>Samples</th><th>Median gas</th></tr></thead>
+            <tbody>
+              {benchmarkRows.map((r) => (
+                <tr key={r.operation}><td className="mono">{r.operation}</td><td>{r.samples}</td><td className="num">{r.medianGas.toLocaleString()}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="dim small">
+            Gas depends only on bytecode and calldata, so these values transfer to any EVM; latency and
+            throughput do not. {data.benchmarks.notes.join(" ")}
+          </p>
+        </>
+      ) : <div className="notice">No benchmark artifact. Run <code>npx hardhat run benchmarks/run-benchmarks.ts</code>.</div>}
+
+      <h3>L1 vs L2 cost model</h3>
+      {data.costModel ? (
+        <>
+          <p className="small">
+            Gas price ratio {data.costModel.ratios.gasPriceRatio}× · token price ratio{" "}
+            {data.costModel.ratios.tokenPriceRatio}× · L1/L2 cost ratio{" "}
+            {data.costModel.ratios.combinedCostRatio.toLocaleString()}×.
+            {!data.costModel.deployedToTestnet && " No testnet deployment: latency and L1 data-availability fees are not measured."}
+          </p>
+          <table className="data-table">
+            <thead><tr><th>Operation</th><th>Median gas</th><th>L1 USD</th><th>L2 USD</th><th>L2 / L1</th></tr></thead>
+            <tbody>
+              {data.costModel.operations.map((r) => (
+                <tr key={r.operation}>
+                  <td className="mono">{r.operation}</td>
+                  <td className="num">{r.medianGas.toLocaleString()}</td>
+                  <td className="num">${r.l1Usd.toFixed(4)}</td>
+                  <td className="num">${r.l2Usd.toFixed(6)}</td>
+                  <td className="num">{r.l2OverL1Pct.toFixed(3)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <ul className="dim small">
+            {data.costModel.caveats.map((c) => <li key={c}>{c}</li>)}
+          </ul>
+        </>
+      ) : <div className="notice">No cost-model artifact. Run <code>npx hardhat run benchmarks/compare-l1-l2.ts</code>.</div>}
+
+      <h3>Anomaly detection (synthetic corpus)</h3>
+      {data.ml ? (
+        <>
+          <p className="small">
+            N = {data.ml.dataset.n_samples}, fraud rate {(data.ml.dataset.fraud_rate * 100).toFixed(2)}%,{" "}
+            {data.ml.dataset.synthetic ? "synthetic labels" : "real labels"}.
+          </p>
+          <table className="data-table">
+            <thead><tr><th>Model</th><th>Precision</th><th>Recall</th><th>F1</th><th>ROC-AUC</th></tr></thead>
+            <tbody>
+              {([
+                ["Random Forest", data.ml.random_forest],
+                ["Logistic Regression", data.ml.logistic_regression],
+                ["Isolation Forest (unsupervised)", data.ml.isolation_forest],
+              ] as Array<[string, Record<string, number>]>).map(([name, m]) => (
+                <tr key={name}>
+                  <td>{name}</td>
+                  <td className="num">{m.precision.toFixed(3)}</td>
+                  <td className="num">{m.recall.toFixed(3)}</td>
+                  <td className="num">{m.f1.toFixed(3)}</td>
+                  <td className="num">{m.roc_auc.toFixed(3)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="dim small">
+            Supervised scores measure recovery of a synthetic signal, not real fraud detection. The
+            unsupervised Isolation Forest never sees labels and is the relevant deployment comparison.
+          </p>
+        </>
+      ) : <div className="notice">No ML metrics artifact. Run the training pipeline in <code>ml-service</code>.</div>}
+
+      <h3>Attack simulations</h3>
+      {data.attacks ? (
+        <>
+          <p className="small">{data.attacks.simulated ? "SIMULATED on the local EVM — protocol behaviour, not live economics." : "Executed."}</p>
+          {data.attacks.results.map((r) => (
+            <div className="result-card" key={r.id}>
+              <strong>{r.id}. {r.name}</strong>
+              <p>{r.conclusion}</p>
+              <p className="dim small">Limitation: {r.limitations}</p>
+            </div>
+          ))}
+        </>
+      ) : <div className="notice">No attack-simulation artifact.</div>}
+
+      <h3>Static analysis and coverage</h3>
+      {data.coverage ? (
+        <>
+          <p className="small">
+            Solidity coverage generated by <code>solidity-coverage</code> on the local Hardhat EVM.
+            Branch coverage is lower than statement and line coverage because every
+            require/revert path is counted. Raw artifact:{" "}
+            <code>coverage/coverage-summary.json</code>.
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Contract</th>
+                <th>Statements</th>
+                <th>Branches</th>
+                <th>Functions</th>
+                <th>Lines</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(data.coverage)
+                .filter(([name]) => name !== "total")
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([name, entry]) => (
+                  <tr key={name}>
+                    <td className="mono small">{name.replace(/^contracts[\\/]/, "")}</td>
+                    <td className="num">{entry.statements.pct.toFixed(2)}%</td>
+                    <td className="num">{entry.branches.pct.toFixed(2)}%</td>
+                    <td className="num">{entry.functions.pct.toFixed(2)}%</td>
+                    <td className="num">{entry.lines.pct.toFixed(2)}%</td>
+                  </tr>
+                ))}
+              {data.coverage.total && (
+                <tr>
+                  <td><strong>Total</strong></td>
+                  <td className="num"><strong>{data.coverage.total.statements.pct.toFixed(2)}%</strong></td>
+                  <td className="num"><strong>{data.coverage.total.branches.pct.toFixed(2)}%</strong></td>
+                  <td className="num"><strong>{data.coverage.total.functions.pct.toFixed(2)}%</strong></td>
+                  <td className="num"><strong>{data.coverage.total.lines.pct.toFixed(2)}%</strong></td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </>
+      ) : (
+        <div className="notice">
+          Coverage summary has not been generated in this checkout; run <code>npm run coverage</code>.
+        </div>
+      )}
+      <p className="small">
+        Slither raw output is stored in <code>security/slither-report-new.json</code>. The triage in{" "}
+        <code>security/SLITHER_REPORT.md</code> explains the current High-impact{" "}
+        <code>arbitrary-send-eth</code> results as false positives; a severity count is not a
+        security guarantee.
+      </p>
+
+      <h3>Pilot survey</h3>
+      <div className="notice warn">
+        <strong>{data.survey.status}.</strong> {data.survey.detail} Template:{" "}
+        <code>{data.survey.path}</code>.
+      </div>
+    </section>
   );
 }

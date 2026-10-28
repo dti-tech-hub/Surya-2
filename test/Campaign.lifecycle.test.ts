@@ -180,7 +180,7 @@ describe("Campaign escrow lifecycle", () => {
       const verifiers = [verifier1, verifier2, verifier3];
 
       // Milestone 0 -> 4000 bps, all three approve.
-      await campaign.submitEvidence(0, "bafyevidence0", ethers.keccak256(ethers.toUtf8Bytes("ev0")));
+      await campaign.submitEvidence(0, "local-evidence-0", ethers.keccak256(ethers.toUtf8Bytes("ev0")));
       await resolveMilestone(campaign, verifier, 0, verifiers, 3);
 
       expect(await campaign.releasedBps()).to.equal(4_000n);
@@ -189,13 +189,13 @@ describe("Campaign escrow lifecycle", () => {
       expect(await campaign.state()).to.equal(1n); // still Active
 
       // Milestone 1 -> 3500 bps, two approve.
-      await campaign.submitEvidence(1, "bafyevidence1", ethers.keccak256(ethers.toUtf8Bytes("ev1")));
+      await campaign.submitEvidence(1, "local-evidence-1", ethers.keccak256(ethers.toUtf8Bytes("ev1")));
       await resolveMilestone(campaign, verifier, 1, verifiers, 2);
       expect(await campaign.releasedBps()).to.equal(7_500n);
       expect(await campaign.totalReleased()).to.equal(ethers.parseEther("75"));
 
       // Milestone 2 -> 2500 bps, completes the campaign.
-      await campaign.submitEvidence(2, "bafyevidence2", ethers.keccak256(ethers.toUtf8Bytes("ev2")));
+      await campaign.submitEvidence(2, "local-evidence-2", ethers.keccak256(ethers.toUtf8Bytes("ev2")));
       await resolveMilestone(campaign, verifier, 2, verifiers, 3);
       expect(await campaign.releasedBps()).to.equal(10_000n);
       expect(await campaign.totalReleased()).to.equal(GOAL);
@@ -290,10 +290,10 @@ describe("Campaign escrow lifecycle", () => {
 
       const verifiers = [verifier1, verifier2, verifier3];
 
-      // Milestone 0 verified -> 40 ETH released to the creator's balance.
+      // Milestone 0 verified -> 40% of the *actual raise* (120 ETH) = 48 ETH.
       await campaign.submitEvidence(0, "ev0", ethers.keccak256(ethers.toUtf8Bytes("ev0")));
       await resolveMilestone(campaign, verifier, 0, verifiers, 3);
-      expect(await campaign.totalReleased()).to.equal(ethers.parseEther("40"));
+      expect(await campaign.totalReleased()).to.equal(ethers.parseEther("48"));
 
       // Milestone 1 rejected (majority Reject).
       await campaign.submitEvidence(1, "ev1", ethers.keccak256(ethers.toUtf8Bytes("ev1")));
@@ -314,12 +314,12 @@ describe("Campaign escrow lifecycle", () => {
           }
         })
         .find((parsed: any) => parsed?.name === "CreatorBalanceClaimed")!.args.amount;
-      expect(creatorPayout).to.equal(ethers.parseEther("40"));
+      expect(creatorPayout).to.equal(ethers.parseEther("48"));
 
-      // Creator abandons the campaign; the unreleased 80 ETH becomes refundable.
+      // Creator abandons the campaign; the unreleased 72 ETH becomes refundable.
       await campaign.failCampaign();
       expect(await campaign.state()).to.equal(2n); // Failed
-      expect(await campaign.refundableBalance()).to.equal(ethers.parseEther("80"));
+      expect(await campaign.refundableBalance()).to.equal(ethers.parseEther("72"));
 
       // Each backer contributed half the pool, so each is owed half the pot.
       const r1 = await campaign.connect(backer).claimRefund();
@@ -346,8 +346,8 @@ describe("Campaign escrow lifecycle", () => {
         })
         .find((parsed: any) => parsed?.name === "RefundClaimed")!.args.amount;
 
-      expect(refund1).to.equal(ethers.parseEther("40"));
-      expect(refund2).to.equal(ethers.parseEther("40"));
+      expect(refund1).to.equal(ethers.parseEther("36"));
+      expect(refund2).to.equal(ethers.parseEther("36"));
       expect(await campaign.escrowBalance()).to.equal(0n);
     });
 

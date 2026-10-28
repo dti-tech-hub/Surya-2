@@ -28,7 +28,9 @@ import { writeFileSync, mkdirSync } from "node:fs";
 
 const DAY = 86_400n;
 const ETH_USD = Number(process.env.BENCH_ETH_USD ?? 2500);
-const GAS_PRICE_GWEI = Number(process.env.BENCH_GAS_PRICE_L1_GWEI ?? 10);
+const GAS_PRICE_GWEI = Number(
+  process.env.BENCH_L1_GWEI ?? process.env.BENCH_GAS_PRICE_L1_GWEI ?? 10,
+);
 const VERIFIER_STAKE = ethers.parseEther("1");
 
 interface ScenarioResult {
@@ -92,16 +94,19 @@ async function deployStack(deployer: any, treasury: any) {
   );
   await disputes.waitForDeployment();
   await reputation.connect(deployer).setWriter(await disputes.getAddress(), true);
-  await disputes.connect(deployer).setArbiter(deployer.address, true);
 
   const Factory = await ethers.getContractFactory("CampaignFactory");
   const factory = await Factory.deploy(
     await verifier.getAddress(),
+    await reputation.getAddress(),
     deployer.address,
     treasury.address
   );
   await factory.waitForDeployment();
   await verifier.connect(deployer).setRegistrar(await factory.getAddress(), true);
+  await reputation.connect(deployer).setRegistrar(await factory.getAddress(), true);
+  await disputes.connect(deployer).setRegistrar(await factory.getAddress(), true);
+  await factory.connect(deployer).setDisputeModule(await disputes.getAddress());
 
   return { reputation, verifier, disputes, factory };
 }
@@ -295,12 +300,10 @@ async function scenarioCollusion() {
 async function scenarioDisputeGrief() {
   const signers = await ethers.getSigners();
   const [deployer, treasury, creator, backer] = signers;
-  const { disputes, factory } = await deployStack(deployer, treasury);
+  const { disputes, verifier, factory } = await deployStack(deployer, treasury);
 
-  const campaign = await armedCampaign(factory, (await deployStack(deployer, treasury)).verifier, creator, backer);
-  void campaign;
-  const address = await factory.campaignAt(0n);
-  await disputes.connect(deployer).setJudgeable(address, true);
+  const campaign = await armedCampaign(factory, verifier, creator, backer);
+  const address = await campaign.getAddress();
 
   const bond = await disputes.disputeBond();
   let raised = 0;
@@ -310,7 +313,7 @@ async function scenarioDisputeGrief() {
   for (let i = 0; i < 3; i++) {
     try {
       await (
-        await disputes.connect(backer).raiseDispute(address, i, ethers.parseEther("5"), { value: bond })
+        await disputes.connect(backer).raiseDispute(address, i, { value: bond })
       ).wait();
       raised++;
     } catch (e: any) {
@@ -325,7 +328,7 @@ async function scenarioDisputeGrief() {
       "A backer attempts to raise a dispute on every milestone in rapid succession to stall a " +
       "campaign. Measures how many succeed and what capital is locked.",
     parameters: {
-      disputeBondEth: Number(ethers.parseEther(bond.toString() === "0" ? "0" : "0.05") / 10n ** 18n),
+      disputeBondEth: Number(ethers.formatEther(bond)),
       cooldownSeconds: Number(await disputes.disputeCooldown()),
       milestonesInCampaign: 3,
       ethUsdAssumed: ETH_USD,

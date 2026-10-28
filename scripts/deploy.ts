@@ -6,13 +6,13 @@
  * writes reputation outcomes).
  *
  * Usage:
- *   npx hardhat run scripts/deploy.ts                       # local hardhat node
+ *   npx hardhat run scripts/deploy.ts --network localhost   # running local node
  *   npx hardhat run scripts/deploy.ts --network sepolia
  *   npx hardhat run scripts/deploy.ts --network amoy
  *
  * Writes deployments/<network>.json for the backend and frontend to consume.
  */
-import { ethers } from "hardhat";
+import { ethers, network } from "hardhat";
 import { writeFileSync, mkdirSync } from "node:fs";
 import type { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 
@@ -76,6 +76,7 @@ async function main() {
   const Factory = await ethers.getContractFactory("CampaignFactory");
   const factory = await Factory.deploy(
     await verifier.getAddress(),
+    await reputation.getAddress(),
     deployer.address,
     treasury.address
   );
@@ -83,24 +84,32 @@ async function main() {
   console.log(`CampaignFactory      ${await factory.getAddress()}\n`);
 
   // ---- Cross-contract permission wiring -----------------------------------
-  // The factory must be able to register campaigns with the verifier.
+  // The factory must be able to register campaigns with the verifier, register each
+  // campaign as a reputation writer, and register it with the dispute module.
   await (await verifier.connect(deployer).setRegistrar(await factory.getAddress(), true)).wait();
+  await (await reputation.connect(deployer).setRegistrar(await factory.getAddress(), true)).wait();
+  await (await disputes.connect(deployer).setRegistrar(await factory.getAddress(), true)).wait();
+  await (await factory.connect(deployer).setDisputeModule(await disputes.getAddress())).wait();
 
-  // The dispute module writes dispute outcomes to reputation.
+  // The dispute module writes dispute and verifier outcomes to reputation.
   await (
     await reputation.connect(deployer).setWriter(await disputes.getAddress(), true)
   ).wait();
 
   console.log("Permissions wired:");
   console.log(`  verifier.registerCampaign  <- ${await factory.getAddress()}`);
+  console.log(`  reputation registrar       <- ${await factory.getAddress()}`);
   console.log(`  reputation writer          <- ${await disputes.getAddress()}`);
+  console.log(`  dispute registrar          <- ${await factory.getAddress()}`);
+  console.log(`  factory disputeModule      -> ${await disputes.getAddress()}`);
 
   // ---- Persistence --------------------------------------------------------
   const outDir = "deployments";
   mkdirSync(outDir, { recursive: true });
   const deployment = {
     chainId,
-    network: process.env.HARDHAT_NETWORK ?? "hardhat",
+    // Follow `--network` so a Sepolia/Amoy run can never overwrite hardhat.json.
+    network: process.env.HARDHAT_NETWORK ?? network.name,
     deployer: deployer.address,
     treasury: treasury.address,
     contracts: {

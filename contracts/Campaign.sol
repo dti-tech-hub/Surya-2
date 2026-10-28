@@ -2,8 +2,8 @@
 pragma solidity ^0.8.20;
 
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { MilestoneVerifier, VoteChoice } from "./MilestoneVerifier.sol";
+import { ReputationRegistry } from "./ReputationRegistry.sol";
 
 /**
  * @title Campaign
@@ -46,7 +46,7 @@ import { MilestoneVerifier, VoteChoice } from "./MilestoneVerifier.sol";
  * keccak256 digest of the file contents; the digest is what verifiers check, so a
  * creator cannot swap the document after submission.
  */
-contract Campaign is ReentrancyGuard, Pausable {
+contract Campaign is ReentrancyGuard {
     /* -------------------------------------------------------------------- */
     /*                                  Types                                */
     /* -------------------------------------------------------------------- */
@@ -95,7 +95,12 @@ contract Campaign is ReentrancyGuard, Pausable {
     ///         a caller-supplied sweep destination is a fund-drain vector.
     address public immutable treasury;
     MilestoneVerifier public immutable verifier;
+    ReputationRegistry public immutable reputation;
     uint64 public immutable createdAt;
+
+    /// @notice Dispute module authorised to override a milestone outcome. Set once by
+    ///         the factory so a creator cannot point disputes at a contract they control.
+    address public disputeModule;
 
     /* -------------------------------------------------------------------- */
     /*                                 Storage                               */
@@ -111,6 +116,10 @@ contract Campaign is ReentrancyGuard, Pausable {
     uint256 public releasedBps;
     uint256 public creatorBalance;
     uint64 public stateChangedAt;
+
+    /// @notice Set once the terminal campaign outcome has been written to the
+    ///         reputation registry. Prevents double counting.
+    bool public outcomeRecorded;
 
     Milestone[] private milestones;
 
@@ -159,6 +168,9 @@ contract Campaign is ReentrancyGuard, Pausable {
     event RefundClaimed(address indexed backer, uint256 amount);
     event DustSwept(address indexed to, uint256 amount);
     event StateChanged(State previous, State current);
+    event DisputeModuleSet(address indexed module);
+    event CampaignDisputeResolved(uint256 indexed index, uint8 outcome, uint16 partialBps);
+    event MilestonePartiallyReleased(uint256 indexed index, uint256 trancheAmount, uint16 creatorShareBps);
 
     /* -------------------------------------------------------------------- */
     /*                                  Errors                              */
@@ -186,6 +198,12 @@ contract Campaign is ReentrancyGuard, Pausable {
     error NothingToSweep();
     error ZeroMilestoneIndex();
     error TransferFailed();
+    error NotFactory(address caller);
+    error DisputeModuleAlreadySet(address module);
+    error NotDisputeModule(address caller);
+    error MilestoneNotDisputable(uint256 index);
+    error InvalidDisputeOutcome(uint8 outcome);
+    error InvalidBps(uint256 value);
 
     /* -------------------------------------------------------------------- */
     /*                                Modifiers                              */
@@ -196,6 +214,18 @@ contract Campaign is ReentrancyGuard, Pausable {
         _;
     }
 
+    modifier onlyFactory() {
+        if (msg.sender != factory) revert NotFactory(msg.sender);
+        _;
+    }
+
+    modifier onlyDisputeModule() {
+        if (msg.sender != disputeModule || disputeModule == address(0)) {
+            revert NotDisputeModule(msg.sender);
+        }
+        _;
+    }
+
     /* -------------------------------------------------------------------- */
     /*                               Constructor                             */
     /* -------------------------------------------------------------------- */
@@ -203,6 +233,7 @@ contract Campaign is ReentrancyGuard, Pausable {
     /**
      * @param creator_ Address that launches the campaign and receives released tranches.
      * @param verifier_ Milestone verification registry.
+     * @param reputation_ On-chain reputation registry written on milestone/campaign outcomes.
      * @param goal_ Funding goal in wei. Must be non-zero.
      * @param fundingDeadline_ Unix timestamp after which no further funds are accepted.
      * @param trancheBps_ Release schedule; must sum to exactly 10 000.
@@ -214,6 +245,7 @@ contract Campaign is ReentrancyGuard, Pausable {
     constructor(
         address creator_,
         address verifier_,
+        address reputation_,
         address treasury_,
         uint256 goal_,
         uint64 fundingDeadline_,
@@ -222,7 +254,12 @@ contract Campaign is ReentrancyGuard, Pausable {
         string[] memory specificationCIDs_,
         uint64[] memory milestoneDeadlines_
     ) {
-        if (creator_ == address(0) || verifier_ == address(0) || treasury_ == address(0)) {
+        if (
+            creator_ == address(0) ||
+            verifier_ == address(0) ||
+            reputation_ == address(0) ||
+            treasury_ == address(0)
+        ) {
             revert ZeroAddress();
         }
         if (goal_ == 0) revert ZeroGoal();
@@ -251,6 +288,7 @@ contract Campaign is ReentrancyGuard, Pausable {
         factory = msg.sender;
         treasury = treasury_;
         verifier = MilestoneVerifier(verifier_);
+        reputation = ReputationRegistry(reputation_);
         createdAt = uint64(block.timestamp);
         goal = goal_;
         fundingDeadline = fundingDeadline_;
@@ -284,6 +322,23 @@ contract Campaign is ReentrancyGuard, Pausable {
     }
 
     /* -------------------------------------------------------------------- */
+    /*                          Protocol wiring                              */
+    /* -------------------------------------------------------------------- */
+
+    /**
+     * @notice Binds this campaign to the dispute module that may override milestone
+     *         outcomes and trigger refunds.
+     * @dev Factory-only and one-shot. Without this restriction a creator could deploy a
+     *      fake "dispute module" and release escrow at will.
+     */
+    function setDisputeModule(address module) external onlyFactory {
+        if (module == address(0)) revert ZeroAddress();
+        if (disputeModule != address(0)) revert DisputeModuleAlreadySet(disputeModule);
+        disputeModule = module;
+        emit DisputeModuleSet(module);
+    }
+
+    /* -------------------------------------------------------------------- */
     /*                              Funding phase                            */
     /* -------------------------------------------------------------------- */
 
@@ -294,7 +349,7 @@ contract Campaign is ReentrancyGuard, Pausable {
      *      tracked as individual sub-accounts, which is what makes pro-rata refunds
      *      computable in O(1).
      */
-    function contribute() external payable nonReentrant whenNotPaused {
+    function contribute() external payable nonReentrant {
         if (state != State.Funding) revert WrongState(State.Funding, state);
         if (block.timestamp > fundingDeadline) revert FundingPeriodOver();
         if (msg.value == 0) revert ZeroContribution();
@@ -346,7 +401,7 @@ contract Campaign is ReentrancyGuard, Pausable {
         uint256 index,
         string calldata evidenceCID,
         bytes32 evidenceHash
-    ) external onlyCreator nonReentrant whenNotPaused {
+    ) external onlyCreator nonReentrant {
         if (index >= milestones.length) revert ZeroMilestoneIndex();
         if (state != State.Active) revert WrongState(State.Active, state);
 
@@ -370,8 +425,9 @@ contract Campaign is ReentrancyGuard, Pausable {
      * @notice Resolves a submitted milestone once its voting window has closed.
      * @dev Permissionless, so a stalled campaign cannot be held hostage by its creator.
      *      Delegates the tally to {MilestoneVerifier} and applies the escrow effect.
-     *      A Rejected milestone leaves the tranche locked; once the milestone deadline
-     *      passes the creator may abandon the campaign, which unlocks refunds.
+     *      A Rejected milestone leaves the tranche locked; the creator may either
+     *      abandon the campaign (unlocking refunds) or appeal through the dispute
+     *      module. A dispute verdict can override the verifier panel.
      */
     function resolveMilestone(uint256 index) external nonReentrant {
         if (index >= milestones.length) revert ZeroMilestoneIndex();
@@ -391,24 +447,69 @@ contract Campaign is ReentrancyGuard, Pausable {
 
     /**
      * @notice Abandons the campaign and unlocks refunds for all backers.
-     * @dev Callable by the creator once any milestone has failed verification, or by
-     *      anyone once all milestone deadlines have passed. Only the *unreleased*
-     *      balance becomes refundable, so funds already earned by the creator are
-     *      unaffected.
+     * @dev Only the creator may abandon early on the strength of a rejected milestone.
+     *      Anyone may abandon once every milestone deadline has elapsed, so an inactive
+     *      creator cannot strand escrow forever. Only the *unreleased* balance becomes
+     *      refundable, so funds already earned by the creator are unaffected.
      */
     function failCampaign() external nonReentrant {
         if (state != State.Active) revert WrongState(State.Active, state);
 
-        bool creatorMayFail = _hasRejectedMilestone() || _allMilestonesExpired();
-        if (msg.sender != creator && !creatorMayFail) {
+        if (msg.sender == creator) {
+            if (!_hasRejectedMilestone() && !_allMilestonesExpired()) {
+                revert WrongState(State.Active, state);
+            }
+        } else if (!_allMilestonesExpired()) {
             revert NotCreator(msg.sender);
         }
-        // A rejected milestone only authorises failure after its own deadline has
-        // passed, giving the creator a chance to resubmit under a corrected claim.
-        if (!_hasRejectedMilestone() && !_allMilestonesExpired()) revert WrongState(State.Active, state);
 
         _setState(State.Failed);
         emit CampaignFailed(totalContributed - totalReleased);
+    }
+
+    /**
+     * @notice Applies a dispute verdict to a milestone and the escrow.
+     * @dev Only the dispute module registered by the factory may call this. This is the
+     *      missing link in the original design: an appeal that cannot move escrow is not
+     *      an appeal. Encoding: 1 = Refund, 2 = Release, 3 = Partial.
+     * @param index Milestone under dispute.
+     * @param outcome Dispute outcome (see {DisputeResolution.Outcome}).
+     * @param partialBps Creator share of the disputed tranche when `outcome == 3`.
+     */
+    function resolveDispute(uint256 index, uint8 outcome, uint16 partialBps)
+        external
+        nonReentrant
+        onlyDisputeModule
+    {
+        if (state != State.Active) revert WrongState(State.Active, state);
+        if (index >= milestones.length) revert ZeroMilestoneIndex();
+
+        Milestone storage m = milestones[index];
+        if (m.state != MilestoneState.Submitted && m.state != MilestoneState.Rejected) {
+            revert MilestoneNotDisputable(index);
+        }
+
+        if (outcome == 1) {
+            // Refund: leave the tranche locked and fail the campaign so every backer can
+            // claim their pro-rata share of the unreleased pot.
+            m.state = MilestoneState.Rejected;
+            m.resolvedAt = uint64(block.timestamp);
+            emit MilestoneRejected(index, 0, 0);
+            _setState(State.Failed);
+        } else if (outcome == 2) {
+            // Release: the appeal found the milestone valid after all.
+            _releaseTranche(index);
+        } else if (outcome == 3) {
+            if (partialBps > BPS) revert InvalidBps(partialBps);
+            _releasePartial(index, partialBps);
+            m.state = MilestoneState.Rejected;
+            m.resolvedAt = uint64(block.timestamp);
+            _setState(State.Failed);
+        } else {
+            revert InvalidDisputeOutcome(outcome);
+        }
+
+        emit CampaignDisputeResolved(index, outcome, partialBps);
     }
 
     /* -------------------------------------------------------------------- */
@@ -420,7 +521,7 @@ contract Campaign is ReentrancyGuard, Pausable {
      * @dev Pull-based: the escrow accrues `creatorBalance` as milestones verify, and the
      *      creator withdraws it whenever convenient.
      */
-    function claimCreatorBalance() external nonReentrant whenNotPaused onlyCreator {
+    function claimCreatorBalance() external nonReentrant onlyCreator {
         uint256 amount = creatorBalance;
         if (amount == 0) revert NothingToClaim();
 
@@ -440,7 +541,7 @@ contract Campaign is ReentrancyGuard, Pausable {
      *      Computed as `contribution * refundable / totalContributed`, which is safe
      *      because the contributions of all backers sum exactly to `totalContributed`.
      */
-    function claimRefund() external nonReentrant whenNotPaused {
+    function claimRefund() external nonReentrant {
         if (state != State.Failed && state != State.Cancelled) {
             revert WrongState(State.Failed, state);
         }
@@ -563,14 +664,21 @@ contract Campaign is ReentrancyGuard, Pausable {
 
         releasedBps = newBps;
 
-        // Tranche is a share of the *goal*. If the campaign raised more than its goal
-        // the surplus stays escrowed and is refundable on failure; if it raised less
-        // (goal met exactly), the tranche equals its proportional share of the funds.
-        uint256 trancheAmount = (goal * m.trancheBps) / BPS;
+        // Tranche is a share of the *actual amount raised*, not of the goal. This is
+        // what makes overfunded campaigns safe: on the final milestone newBps == BPS,
+        // so `cumulative` equals `totalContributed` and the entire surplus is released
+        // to the creator instead of being stranded forever in a Completed campaign.
+        // Using the cumulative amount also avoids per-step rounding dust.
+        uint256 cumulative = (totalContributed * newBps) / BPS;
+        uint256 trancheAmount = cumulative > totalReleased ? cumulative - totalReleased : 0;
         if (trancheAmount > refundableBalance()) trancheAmount = refundableBalance();
 
         totalReleased += trancheAmount;
         creatorBalance += trancheAmount;
+
+        // Delivery reputation: an approval after the milestone deadline is still a
+        // delivery, but it is not an on-time one.
+        reputation.recordMilestone(creator, block.timestamp <= m.deadline);
 
         bool complete = releasedBps == BPS && _allMilestonesResolved();
         if (complete) {
@@ -580,11 +688,50 @@ contract Campaign is ReentrancyGuard, Pausable {
         emit MilestoneVerified(index, trancheAmount, releasedBps, complete);
     }
 
+    /**
+     * @dev Releases the creator's share of one tranche when a dispute resolves as
+     *      Partial. The remainder stays in escrow and becomes refundable because the
+     *      caller (`resolveDispute`) immediately fails the campaign afterwards.
+     */
+    function _releasePartial(uint256 index, uint16 creatorShareBps) private {
+        Milestone storage m = milestones[index];
+
+        uint256 newBps = releasedBps + m.trancheBps;
+        if (newBps > BPS) revert InvalidTrancheSum(newBps, BPS);
+        releasedBps = newBps;
+
+        uint256 tranche = (totalContributed * m.trancheBps) / BPS;
+        uint256 amount = (tranche * creatorShareBps) / BPS;
+        if (amount > refundableBalance()) amount = refundableBalance();
+
+        totalReleased += amount;
+        creatorBalance += amount;
+
+        reputation.recordMilestone(creator, block.timestamp <= m.deadline);
+
+        emit MilestoneVerified(index, amount, releasedBps, false);
+        emit MilestonePartiallyReleased(index, amount, creatorShareBps);
+    }
+
     function _setState(State next) private {
         State previous = state;
         state = next;
         stateChangedAt = uint64(block.timestamp);
+
+        if (next == State.Completed) {
+            _recordOutcome(true);
+        } else if (next == State.Failed) {
+            _recordOutcome(false);
+        }
+
         emit StateChanged(previous, next);
+    }
+
+    /// @dev Writes the terminal campaign outcome exactly once.
+    function _recordOutcome(bool completed) private {
+        if (outcomeRecorded) return;
+        outcomeRecorded = true;
+        reputation.recordCampaign(creator, completed);
     }
 
     function _hasRejectedMilestone() private view returns (bool) {

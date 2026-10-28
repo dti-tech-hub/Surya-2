@@ -1,184 +1,285 @@
 # Slither Security Report and Triage
 
-Tool: `slither-analyzer 0.11.6`, 102 detectors, run via `crytic-compile` on the Hardhat
-project. Raw output: [`slither-report.json`](./slither-report.json). Severity counts:
+Tool: `slither-analyzer 0.11.6`, run via `crytic-compile` on the Hardhat project with
+`--exclude-dependencies`. Latest raw output:
+[`slither-report-new.json`](./slither-report-new.json). Earlier 60-finding baseline:
+[`slither-report.json`](./slither-report.json). Severity counts:
 [`slither-summary.md`](./slither-summary.md).
 
-Reproduce with:
+Reproduce the current run with:
 
 ```bash
 npx hardhat clean
 slither . --compile-force-framework hardhat --exclude-dependencies \
-  --json security/slither-report.json
-python security/triage_slither.py security/slither-report.json
+  --json security/slither-report-new.json
+python security/triage_slither.py security/slither-report-new.json
 ```
 
 ## Result summary
 
-| | Before triage | After fixes |
-|---|---|---|
-| High | 2 | **0** |
-| Medium | 8 | 10 |
-| Low | 34 | 32 |
-| Informational | 12 | 12 |
-| Optimization | 7 | 6 |
-| **Total** | **63** | **60** |
+| Impact | Previous run | Current run |
+|---|---:|---:|
+| High | 0 | **3** |
+| Medium | 10 | **14** |
+| Low | 32 | **34** |
+| Informational | 12 | **21** |
+| Optimization | 6 | **6** |
+| **Total** | **60** | **78** |
 
-The Medium count rose because fixing the reentrancy in `settleJuror` introduced a new
-pro-rata reward expression that `divide-before-multiply` flags, and one uninitialized-local
-moved location. Total actionable severity dropped from 10 to 10 but, critically, the two
-**High** findings that represented real fund-drain paths are gone.
+The count rose because the dispute-settlement path was expanded after the previous
+scan. The new code added explicit pull-payment branches, a partial-release path in
+`Campaign`, and extra local variables in `DisputeResolution`. Slither's
+`arbitrary-send-eth` heuristic now flags the three new ETH-transfer sites.
+
+**All three current High-impact results are false positives, not unresolved fund-drain
+vulnerabilities.** They are pull payments to an already-authenticated juror or transfers
+to the immutable treasury. The two historical High-severity defects that *were* real
+(caller-chosen dust destination and juror-settlement accounting/reentrancy) remain fixed
+and have regression tests. Details are in the next two sections.
 
 ---
 
-## High findings — both fixed
+## Current High-impact findings — all triaged false positives
 
-### H1. `arbitrary-send-eth`: `Campaign.sweepDust(address)` sent ETH to a caller-supplied address
+Slither reports `High` impact but `Medium` confidence on all three. The detector's
+heuristic is that ETH leaves the contract through a call whose recipient is not a
+compile-time constant. That is true of every pull-payment design; the relevant question
+is whether the recipient is attacker-controlled. Here it is not.
 
-**The bug.** `sweepDust(address treasury)` accepted the payout destination as a parameter.
-The NatSpec claimed it was "routed to the treasury, never to an arbitrary caller", which
-was false: anyone could pass their own address and sweep the accrued dust to themselves.
+### H1. `arbitrary-send-eth` — `DisputeResolution._settleCorrectJuror`
 
-**Why it mattered.** The dust is bounded and small (integer-division remainder, at most
-`backers.length - 1` wei), so the direct loss is minor. The real problem was that the code
-contradicted its own stated invariant, which is exactly the kind of divergence that gets
-exploited. This was introduced by me during Phase 1 and caught only because Slither was
-run — the functional tests did not cover `sweepDust` at all.
+**Location.** `contracts/DisputeResolution.sol#562-590`, transfer at line 587:
 
-**Fix.** Removed the parameter entirely. `treasury` is now an `immutable` set in the
-constructor and threaded from the factory (falling back to the factory's own treasury when
-`CampaignParams.treasury` is `address(0)`).
+```solidity
+if (reward > 0) {
+    (bool ok, ) = payable(msg.sender).call{ value: reward }("");
+    if (!ok) revert TransferFailed();
+}
+```
 
-**Regression test.** `test/Security.regression.test.ts` asserts the function takes zero
-arguments and that the `DustSwept` event destination equals the immutable treasury.
+**Why Slither flags it.** The recipient is `msg.sender`, not a constant.
 
-### H2. `reentrancy-eth`: `DisputeResolution.settleJuror`
+**Why it is a false positive.** `_settleCorrectJuror` is reached only from
+`settleJuror`, which:
 
-**The bug — three distinct defects, not one.**
+1. requires `d.state == Resolved`;
+2. returns immediately unless `hasVoted[key][msg.sender]` is true;
+3. reverts if `jurorClaimed[key][msg.sender]` is already true;
+4. marks `jurorClaimed` **before** the transfer;
+5. derives `reward` from `d.rewardPool` and the caller's recorded vote weight, then
+   decrements the pool before the call.
 
-1. **Checks-effects-interactions violation.** `j.casesCorrect += 1` executed *after* the
+The caller is therefore an entitled juror withdrawing their own pro-rata reward. This is
+the standard pull-payment pattern, and `settleJuror` is `nonReentrant`. There is no path
+for an arbitrary address to choose the recipient or the amount.
+
+### H2. `arbitrary-send-eth` — `DisputeResolution._settleIncorrectJuror`
+
+**Location.** `contracts/DisputeResolution.sol#592-613`, transfer at line 610:
+
+```solidity
+(bool ok, ) = payable(treasury).call{ value: slash }("");
+if (!ok) revert TransferFailed();
+```
+
+**Why it is a false positive.** `treasury` is set in the constructor and is not a
+caller-supplied parameter. The call sends the slashed juror stake to the protocol
+treasury. State (`j.stake`, `totalJurorStake`, reputation) is updated before the transfer,
+and the enclosing `settleJuror` is `nonReentrant`.
+
+### H3. `arbitrary-send-eth` — `DisputeResolution._settleBonds`
+
+**Location.** `contracts/DisputeResolution.sol#485-517`, transfers at lines 499 and 514:
+
+```solidity
+(bool ok, ) = payable(d.raiser).call{ value: raiserBond }("");   // line 499
+...
+(bool ok, ) = payable(treasury).call{ value: toTreasury }("");  // line 514
+```
+
+**Why it is a false positive.** Both recipients are fixed by state, not by the current
+caller:
+
+- `d.raiser` is the address that called `raiseDispute` and whose bond is recorded in
+  `d.raiserBond`.
+- `treasury` is the immutable protocol treasury.
+
+The function is internal, called by `resolve` (which is `nonReentrant`) after the
+dispute state and bond escrow have been updated. No external caller can redirect either
+payment.
+
+**Conclusion.** No current High-impact finding is assessed as a real vulnerability.
+This conclusion is a manual triage, not a proof; see the limitations at the end.
+
+---
+
+## Historical High-severity defects — fixed
+
+These were real and were found by earlier Slither runs. They are retained here because
+the paper's security narrative depends on them.
+
+### Historical H1. `arbitrary-send-eth` — `Campaign.sweepDust(address)`
+
+**The bug.** `sweepDust(address treasury)` accepted the payout destination as a runtime
+parameter. Despite NatSpec claiming the dust went to the treasury, any caller could pass
+their own address and sweep the accrued dust to themselves.
+
+**Impact.** The direct loss was bounded by integer-division dust (at most
+`backers.length - 1` wei), but the code contradicted its stated invariant.
+
+**Fix.** Removed the parameter. `treasury` is now an `immutable` set in the constructor
+and threaded from the factory. `sweepDust()` requires every known backer to have claimed
+and is `nonReentrant`.
+
+**Regression test.** `test/Security.regression.test.ts` asserts the zero-argument
+interface and that the `DustSwept` destination equals the immutable treasury.
+
+### Historical H2. `reentrancy-eth` — `DisputeResolution.settleJuror`
+
+**The bug — three distinct defects.**
+
+1. **Checks-effects-interactions violation.** `j.casesCorrect += 1` executed after the
    external reward transfer.
 2. **Fund-drain via reward accounting.** The reward was `totalBondEscrow / 100` — a flat
-   1% of the *entire* bond pool — paid to every correct juror regardless of their weight.
-   A juror participating in N disputes could withdraw roughly N% of the escrow, draining
-   funds that belonged to other disputes' bond posters.
+   1% of the *entire* bond pool — paid to every correct juror regardless of weight. A
+   juror participating in multiple disputes could drain funds belonging to unrelated
+   disputes.
 3. **No reentrancy guard.**
 
-Defect 2 is the serious one and was not what the detector's headline claimed. The
-detector correctly identified the CEI violation; triaging the surrounding code revealed
-the drain.
-
 **Fix.**
-- Inherits OpenZeppelin `ReentrancyGuard`; `settleJuror` is `nonReentrant`.
-- Rewards are now drawn from `d.bondEscrowed` (the bond attributable to *this* dispute),
-  scaled to `REWARD_SHARE_BPS` (50%), and divided among majority jurors **pro-rata by
-  weight**: `(bondEscrowed * REWARD_SHARE_BPS / BPS) * myWeight / majorityWeight`.
-- All state writes (`casesCorrect`, `totalBondEscrow`) now precede the transfer.
 
-**Regression tests.** Two tests in `test/Security.regression.test.ts`: one asserts a single
-correct juror receives at most 50% of the dispute's own bond; the other runs three
-disputes and asserts the total paid across all of them is bounded by 50% of the total
-posted, which is impossible under the old flat-1% logic.
+- `settleJuror` inherits OpenZeppelin `ReentrancyGuard` and is `nonReentrant`.
+- Rewards are drawn from `d.rewardPool` (the bond attributable to *this* dispute),
+  scaled by `REWARD_SHARE_BPS` and divided pro-rata by weight:
+  `(d.rewardPool * weight) / correctWeight`.
+- All state writes precede the transfer.
+- Losing jurors are slashed from their vote-time stake; ties reward all voters and slash
+  nobody.
+
+**Regression tests.** `test/Security.regression.test.ts` bounds a correct juror's reward
+by the dispute's own bond, weights it by stake, and verifies that a losing juror cannot
+withdraw before settlement and is slashed once.
 
 ---
 
 ## Medium findings — triaged
 
-### M1–M3. `divide-before-multiply` (3 findings)
+### M1–M4. `divide-before-multiply` (4 findings)
 
-`ReputationRegistry.scoreOf`, `MilestoneVerifier.claimSettlement`,
-`DisputeResolution.settleJuror`.
+**Locations.** `Campaign._releasePartial` (lines 696, 703–704),
+`ReputationRegistry.scoreOf` (lines 253, 262–271), `MilestoneVerifier.claimSettlement`
+(lines 591, 624, 631).
 
-**Verdict: accepted, documented, not fixed.** These flag expressions of the form
-`(a * X / BPS) * b`. The concern is precision loss. Concretely:
+**Verdict: accepted, documented, not fixed.**
 
-- In `scoreOf`, the result is a 0..10000 reputation figure recomputed by a Python
-  reference implementation on every score read. **Precision here is a correctness
-  requirement, not an optimisation**, so restructuring the expression risks silently
-  desynchronising the on-chain and off-chain scores. `test/ReputationRegistry.test.ts`
-  pins exact parity between the two implementations.
-- In `claimSettlement` and `settleJuror`, the quantities are wei amounts and the rounding
-  is bounded by well under 1 wei per participant; the total distributed can never exceed
-  the pool, because each share is floored and the remainder is simply not paid.
+- In `_releasePartial`, the expression floors the tranche and then floors the creator
+  share. The total rounding loss is bounded by roughly 1 wei per partial release; the
+  remaining wei stays in escrow and is refundable.
+- In `scoreOf`, the ratios are integer basis points and the weights sum to 10,000. The
+  floor at each ratio can lose less than 1 bps per component; the on-chain score is
+  reproduced byte-exactly by `ml-service/reputation.py` and pinned by parity tests.
+  Restructuring the expression to satisfy the detector would risk desynchronising the two
+  implementations.
+- In `claimSettlement`, the reward share is floored per juror; the undistributed
+  remainder stays in the contract. The total paid can never exceed the reserved pool
+  because each share is capped and the pool is decremented before transfer.
 
-The realistic risk in all three is dust that is never reclaimed, not fund loss. That is a
-known and accepted trade-off documented in `docs/DECISIONS.md`.
+The realistic risk is dust that is never reclaimed, not fund loss. This is a known
+trade-off documented in `docs/DECISIONS.md`.
 
-### M4–M5. `incorrect-equality` (2 findings)
+### M5–M6. `incorrect-equality` (2 findings)
 
-`Campaign.sweepDust` (`if (dust == 0) revert`) and `Campaign._hasRejectedMilestone`
-(`if (milestones[i].state == MilestoneState.Rejected)`).
+**Locations.** `Campaign._hasRejectedMilestone` (`state == MilestoneState.Rejected`) and
+`Campaign.sweepDust` (`dust == 0`, state sentinel checks).
 
-**Verdict: false positive.** The detector's heuristic is that `==` in a condition can mask
-an unintended branch. Both uses are intentional equality tests against a sentinel
-(nothing to sweep / a specific enum state), not mistaken strictness. There is no
-floating-point or rounding context where `==` is unsafe here.
+**Verdict: false positive.** These are intentional equality tests against enum states or
+a sentinel value, not mistaken strictness. There is no floating-point or rounding context
+where `==` is unsafe here.
 
-### M6. `reentrancy-no-eth`: `Campaign.resolveMilestone`
+### M7–M10. `reentrancy-no-eth` (4 findings)
 
-**Verdict: accepted.** `resolveMilestone` is `nonReentrant`, calls
-`verifier.settleRound` (a trusted system contract that does not transfer ETH and does not
-call back), and then only updates storage. The detector flags it because `settleRound` is
-an external call whose result is trusted. Mitigating factors:
+**Locations.** `Campaign.resolveMilestone` (lines 432–442),
+`Campaign.resolveDispute` (lines 479–504, including `_releasePartial` at 710).
 
-- It is guarded by `nonReentrant`.
-- `settleRound` cannot re-enter `Campaign` (no reference back to it).
-- A malicious verifier admin could return a false `Approve`, but that is a
-  **governance/trust** risk recorded in `security/THREAT_MODEL.md` as E2, not a
-  reentrancy risk.
+**Verdict: accepted.** Both functions are `nonReentrant`. `resolveMilestone` calls
+`verifier.settleRound`, a trusted system contract that does not transfer ETH and does not
+call back into `Campaign`. `resolveDispute` is called by the factory-bound dispute module
+and applies the verdict to escrow; the module is authorised once and cannot be replaced.
+A compromised verifier admin could return a false `Approve`, but that is a governance
+risk recorded in `security/THREAT_MODEL.md`, not a reentrancy risk.
 
-### M7–M8. `uninitialized-local` (2 findings)
+### M11–M14. `uninitialized-local` (4 findings)
 
-`CampaignFactory.createCampaign.trancheSum` and `DisputeResolution.settleJuror.reward`.
+**Locations.** `CampaignFactory.createCampaign.trancheSum` (line 122),
+`Campaign` constructor `trancheSum` (line 278), `DisputeResolution.resolve.outcome` /
+`partialBps` (line 433), and `DisputeResolution._settleCorrectJuror.reward` (line 575).
 
-**Verdict: accepted, benign.** Both are declared without an initialiser and then
-immediately assigned before any read:
+**Verdict: accepted, benign.** Solidity zero-initialises locals, and every variable is
+assigned before it is read:
 
 ```solidity
-uint256 trancheSum;          // assigned on the very next line
-uint256 trancheSum;
+uint256 trancheSum;          // accumulated in the loop before the check
 for (...) { trancheSum += ...; }
+
+Outcome outcome;
+uint16 partialBps;           // only read when outcome == Partial
+...
+uint256 reward;              // only read after the conditional assignment
 ```
 
-Solidity zero-initialises locals, and Slither's own docs describe this detector as
-medium-confidence for exactly this shape. No behavioural impact; no fix warranted, and
-adding a redundant `= 0` would only add noise.
+Adding a redundant `= 0` would not change behaviour.
 
 ---
 
-## Low / Informational / Optimization — not individually triaged
+## Low / Informational / Optimization findings
 
-32 Low, 12 Informational, 6 Optimization. These are dominated by:
+34 Low, 21 Informational, and 6 Optimization results remain. They are dominated by:
 
-- **Cache array length in loops** (`for (uint256 i = 0; i < milestones.length; ++i)`).
-  These loops are bounded: `MAX_MILESTONES = 32` is enforced in the constructor, so
-  worst-case cost is a fixed, small constant. Caching the length would save a few hundred
-  gas at the cost of readability with no security benefit. Fixed in `sweepDust` anyway
-  during the H1 fix, since it was already being touched.
-- **`goal`/`fundingDeadline` could be immutable.** `goal` and `fundingDeadline` are
-  written once in the constructor and never modified. They cannot be `immutable` without
-  restructuring because they are also read through the `campaign` struct in the same
-  contract. Low value; left alone.
-- Reentrancy guards, safe ERC20 usage, and shadowing warnings, all reviewed and dismissed
-  with reasons in the JSON.
+- **`timestamp` (23, Low).** Deadline comparisons, cooldowns, and reputation decay. None
+  is used as a randomness source. Miners can shift timestamps by a small amount; the
+  protocol does not depend on second-level precision.
+- **`low-level-calls` (14, Informational).** The expected `.call` sites for pull
+  payments. Return values are checked and failures revert.
+- **`reentrancy-benign` (5, Low).** State written after an external call where no ETH is
+  at risk; reviewed alongside the `nonReentrant` guards.
+- **`reentrancy-events` (5, Low).** Events emitted after external calls. No state
+  corruption; event ordering only.
+- **`missing-zero-check` (1, Low).** `CampaignFactory.setDisputeModule` is admin-only and
+  accepts `address(0)`, which intentionally disables dispute binding for **future**
+  campaigns. Existing campaigns keep their bound module. This is a documented admin
+  footgun, not a fund-drain path.
+- **`missing-inheritance` (3, Informational).** Interfaces are implemented but not
+  declared on the contract; cosmetic.
+- **`cyclomatic-complexity` (2, Informational).** `settleRound` and `claimSettlement`
+  encode the tally and settlement branches explicitly.
+- **`solc-version` (1, Informational).** Flags an OpenZeppelin dependency pragma; the
+  project itself pins 0.8.20.
+- **`unused-state` (1, Informational).** `MilestoneVerifier.MAX_BPS` is unused. No
+  behavioural impact.
+- **`cache-array-length` (3, Optimization).** Loops over milestones/backers are bounded
+  (`MAX_MILESTONES = 32`); caching the length saves a few hundred gas at a readability
+  cost.
+- **`immutable-states` (3, Optimization).** `goal` and `fundingDeadline` are written once
+  in the constructor but are read through storage; `DisputeResolution.treasury` is
+  admin-settable and therefore not immutable. Left as-is.
 
 ---
 
 ## Honest limitations of this analysis
 
 1. **Static analysis is not a proof of absence of bugs.** Slither found two real High
-   defects here, which is evidence it is worth running, and simultaneously evidence that a
-   clean report is not the same as secure code.
-2. **The detector set is not exhaustive.** Reentrancy via cross-function paths,
-   economic attacks, oracle manipulation, and governance capture are largely outside its
-   reach. `security/THREAT_MODEL.md` covers the threats it cannot, and several of those are
-   recorded as explicitly unresolved.
-3. **No formal verification has been performed.** Every property asserted here is backed
-   by a test, not a proof.
-4. **Dependency risk was excluded** (`--exclude-dependencies`), so OpenZeppelin's own
-   contracts were not analysed. This is a reasonable default: they are widely reviewed and
-   pinned to a released version. It does mean a compromised OpenZeppelin release would not
-   be caught by this scan.
-5. **Coverage gaps remain.** The Medium `divide-before-multiply` findings in
-   `scoreOf` are only partially exercised; a fuzz/property test would give stronger
-   assurance that the on-chain and Python scoring implementations cannot drift.
+   defects in earlier revisions, which is evidence it is worth running; it is equally
+   evidence that a clean or triaged report is not the same as secure code.
+2. **The detector set is not exhaustive.** Cross-function reentrancy, economic attacks,
+   oracle manipulation, governance capture, and off-chain threats are largely outside its
+   reach. `security/THREAT_MODEL.md` covers those and records several as unresolved.
+3. **Triage is manual.** The three current High results are assessed as false positives
+   from code inspection, not from a formal invariant proof. A reviewer should re-check the
+   recipient constraints independently.
+4. **No formal verification.** Every property here is backed by a test or an argument, not
+   a proof.
+5. **Dependencies were excluded.** OpenZeppelin contracts were not analysed. They are
+   widely reviewed and pinned, but a compromised release would not be caught by this scan.
+6. **Coverage gaps remain.** Branch coverage is 62.10%; some defensive paths are not
+   exercised. A fuzz/property campaign would give stronger assurance, particularly around
+   the partial-release arithmetic and dispute bond accounting.

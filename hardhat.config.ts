@@ -1,6 +1,8 @@
 import type { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-ethers";
 import "@nomicfoundation/hardhat-chai-matchers";
+import "@typechain/hardhat";
+import "@nomicfoundation/hardhat-verify";
 import "hardhat-gas-reporter";
 import "solidity-coverage";
 
@@ -35,6 +37,10 @@ const config: HardhatUserConfig = {
       blockGasLimit: 30_000_000,
       allowUnlimitedContractSize: false,
     },
+    localhost: {
+      url: process.env.LOCALHOST_RPC_URL ?? "http://127.0.0.1:8545",
+      chainId: 31337,
+    },
     sepolia: {
       url: process.env.SEPOLIA_RPC_URL ?? "",
       accounts: process.env.DEPLOYER_PRIVATE_KEY ? [process.env.DEPLOYER_PRIVATE_KEY] : [],
@@ -60,12 +66,9 @@ const config: HardhatUserConfig = {
   mocha: {
     timeout: 120_000,
   },
-  gasReporter: {
-    enabled: process.env.REPORT_GAS === "true",
-    currency: "USD",
-    // Gas price assumptions are stated explicitly in benchmarks/README.md.
-    gasPrice: Number(process.env.GAS_REPORT_GAS_PRICE ?? 20),
-    token: "ETH",
+  typechain: {
+    outDir: "typechain-types",
+    target: "ethers-v6",
   },
   etherscan: {
     apiKey: {
@@ -73,6 +76,13 @@ const config: HardhatUserConfig = {
       sepolia: process.env.ETHERSCAN_API_KEY ?? "",
       arbitrumSepolia: process.env.ARBISCAN_API_KEY ?? "",
     },
+  },
+  gasReporter: {
+    enabled: process.env.REPORT_GAS === "true",
+    currency: "USD",
+    // Gas price assumptions are stated explicitly in benchmarks/README.md.
+    gasPrice: Number(process.env.GAS_REPORT_GAS_PRICE ?? 20),
+    token: "ETH",
   },
 };
 

@@ -1,7 +1,7 @@
 operation,medianGas,l1_cost_usd,l2_cost_usd,l2_as_pct_of_l1,pct_of_5usd_l1,pct_of_5usd_l2
-createCampaign,2096539,52.413475,0.000052,0,,
-contribute,40707,1.017675,0.000001,0,,
-submitEvidence,163749,4.093725,0.000004,0,,
-castVote,97157,2.428925,0.000002,0,,
-resolveMilestone,157543,3.938575,0.000004,0,,
-claimCreatorBalance,57144,1.4286,0.000001,0,,
+createCampaign,2576665,64.416625,0.03865,0.06,1288.333,0.773
+contribute,38627,0.965675,0.000579,0.06,19.314,0.012
+submitEvidence,189140,4.7285,0.002837,0.06,94.57,0.057
+castVote,119427,2.985675,0.001791,0.06,59.713,0.036
+resolveMilestone,184614,4.61535,0.002769,0.06,92.307,0.055
+claimCreatorBalance,55064,1.3766,0.000826,0.06,27.532,0.017

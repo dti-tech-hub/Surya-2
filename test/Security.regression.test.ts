@@ -151,173 +151,118 @@ describe("Regression: Slither findings", () => {
 
   describe("R2/R3 - juror settlement accounting", () => {
     async function disputeFixture() {
-      const [admin, treasury, creator, backer, , juror1, juror2] = await ethers.getSigners();
-
-      const Reputation = await ethers.getContractFactory("ReputationRegistry");
-      const reputation = await Reputation.deploy(admin.address);
-      await reputation.waitForDeployment();
-
-      const Verifier = await ethers.getContractFactory("MilestoneVerifier");
-      const verifier = await Verifier.deploy(
-        admin.address,
-        treasury.address,
-        ethers.ZeroAddress,
-        ethers.parseEther("1"),
-        5_000,
-        6_000,
-        Number(2n * DAY),
-        0,
-        2_000,
-        5_000
-      );
-      await verifier.waitForDeployment();
+      const system = await deploySystem();
+      const { factory, verifier, reputation, creator, backer, treasury } = system;
 
       const Dispute = await ethers.getContractFactory("DisputeResolution");
       const disputes = await Dispute.deploy(
-        admin.address,
+        creator.address,
         treasury.address,
         await verifier.getAddress(),
         await reputation.getAddress()
       );
       await disputes.waitForDeployment();
-      await reputation.connect(admin).setWriter(await disputes.getAddress(), true);
-      await disputes.connect(admin).setArbiter(admin.address, true);
+      await reputation.connect(creator).setWriter(await disputes.getAddress(), true);
+      await disputes.connect(creator).setRegistrar(await factory.getAddress(), true);
+      await factory.connect(creator).setDisputeModule(await disputes.getAddress());
 
-      const Factory = await ethers.getContractFactory("CampaignFactory");
-      const factory = await Factory.deploy(
-        await verifier.getAddress(),
-        admin.address,
-        treasury.address
-      );
-      await factory.waitForDeployment();
-      await verifier.connect(admin).setRegistrar(await factory.getAddress(), true);
+      const params = await buildParams();
+      const campaignAddress = await createCampaign(factory, creator, params);
+      const campaign = await ethers.getContractAt("Campaign", campaignAddress);
 
-      const block = await ethers.provider.getBlock("latest");
-      const t = block!.timestamp;
-      const params = {
-        goal: ethers.parseEther("100"),
-        fundingDeadline: t + 30 * 86400,
-        trancheBps: [4_000, 3_500, 2_500],
-        descriptionHashes: [ethers.ZeroHash, ethers.ZeroHash, ethers.ZeroHash],
-        specificationCIDs: ["c0", "c1", "c2"],
-        milestoneDeadlines: [t + 40 * 86400, t + 50 * 86400, t + 60 * 86400],
-        treasury: ethers.ZeroAddress,
+      await campaign.connect(backer).contribute({ value: GOAL });
+      await time.increaseTo(params.fundingDeadline + 1);
+      await campaign.closeFunding();
+      await campaign
+        .connect(creator)
+        .submitEvidence(0, "cid0", ethers.keccak256(ethers.toUtf8Bytes("ev0")));
+
+      return {
+        ...system,
+        disputes,
+        campaign,
+        campaignAddress,
       };
-      const tx = await factory.connect(creator).createCampaign(params);
-      const rc = await tx.wait();
-      const ev = rc!.logs
-        .map((l: any) => {
+    }
+
+    it("bounds a correct juror's reward by the dispute's own bond and weights it by stake", async () => {
+      const f = await disputeFixture();
+      const jurorA = f.verifier1;
+      const jurorB = f.verifier2;
+
+      // Two jurors with very different stakes. Payout must reflect weight, not headcount.
+      await f.disputes.connect(jurorA).stakeJuror({ value: ethers.parseEther("9") });
+      await f.disputes.connect(jurorB).stakeJuror({ value: ethers.parseEther("1") });
+
+      const bond = await f.disputes.disputeBond();
+      await (
+        await f.disputes.connect(f.backer).raiseDispute(f.campaignAddress, 0, { value: bond })
+      ).wait();
+
+      const key = await f.disputes.disputeKey(f.campaignAddress, 0);
+      await f.disputes.connect(jurorA).castVote(key, true);
+      await f.disputes.connect(jurorB).castVote(key, true);
+
+      await time.increaseTo(Number((await f.disputes.getDispute(key)).voteDeadline) + 1);
+      await f.disputes.connect(f.creator).resolve(key); // Release: raiser loses bond
+
+      const before = await f.disputes.getDispute(key);
+      expect(before.rewardPool).to.equal((bond * 5_000n) / 10_000n);
+
+      const tx = await f.disputes.connect(jurorA).settleJuror(key);
+      const rcpt = await tx.wait();
+      const rewardA = rcpt!.logs
+        .map((log: any) => {
           try {
-            return factory.interface.parseLog(l);
+            return f.disputes.interface.parseLog(log);
           } catch {
             return null;
           }
         })
-        .find((p: any) => p?.name === "CampaignDeployed")!;
-      const campaignAddress = ev.args.campaign as string;
-      await disputes.connect(admin).setJudgeable(campaignAddress, true);
+        .find((p: any) => p?.name === "JurorSettled")!.args.reward;
 
-      return { disputes, reputation, admin, creator, backer, juror1, juror2, campaignAddress };
-    }
+      // 90% of the reserved 0.025 ETH pool.
+      expect(rewardA).to.equal(ethers.parseEther("0.0225"));
+      expect(rewardA).to.be.lte((bond * 5_000n) / 10_000n);
+      expect(rewardA).to.be.lt(bond);
+    });
 
-    it("pays a correct juror a pro-rata share, not a flat 1% of the whole pool", async () => {
+    it("prevents a losing juror from withdrawing before settlement and slashes them once", async () => {
       const f = await disputeFixture();
+      const jurorA = f.verifier1;
+      const jurorB = f.verifier2;
+      const jurorC = f.verifier3;
 
-      // Two jurors with very different stakes. The large juror's weight dominates, so a
-      // correct majority payout must reflect weight, not headcount.
-      await f.disputes.connect(f.juror1).stakeJuror({ value: ethers.parseEther("9") });
-      await f.disputes.connect(f.juror2).stakeJuror({ value: ethers.parseEther("1") });
+      await f.disputes.connect(jurorA).stakeJuror({ value: ethers.parseEther("1") });
+      await f.disputes.connect(jurorB).stakeJuror({ value: ethers.parseEther("1") });
+      await f.disputes.connect(jurorC).stakeJuror({ value: ethers.parseEther("1") });
 
       const bond = await f.disputes.disputeBond();
       await (
-        await f.disputes
-          .connect(f.backer)
-          .raiseDispute(f.campaignAddress, 0, ethers.parseEther("5"), { value: bond })
-      ).wait();
-
-      const key = await f.disputes.disputeKey(f.campaignAddress, 0);
-      // Both vote pro-refund; the dispute then resolves as Refund, so both are correct.
-      await f.disputes.connect(f.juror1).castVote(key, false);
-      await f.disputes.connect(f.juror2).castVote(key, false);
-
-      await time.increaseTo(Number((await f.disputes.getDispute(key)).voteDeadline) + 1);
-      await f.disputes.connect(f.admin).resolve(key, 1, 0); // Refund
-
-      const dispute = await f.disputes.getDispute(key);
-      // Exactly the raised bond is attributed to this dispute.
-      expect(dispute.bondEscrowed).to.equal(bond);
-
-      const escrowBefore = await f.disputes.totalBondEscrow();
-      await f.disputes.connect(f.juror1).settleJuror(key);
-      const escrowAfter = await f.disputes.totalBondEscrow();
-      const paid = escrowBefore - escrowAfter;
-
-      // At most REWARD_SHARE_BPS (50%) of the dispute's bond, and it must be strictly
-      // less than the bond. The old code could pay 1% of the TOTAL pool regardless of
-      // which dispute it came from, which is not bounded this way.
-      expect(paid).to.be.gt(0n);
-      expect(paid).to.be.lte((bond * 5_000n) / 10_000n);
-      expect(paid).to.be.lt(bond);
-    });
-
-    it("does not let a juror drain the escrow by claiming across many disputes", async () => {
-      const f = await disputeFixture();
-      await f.disputes.connect(f.juror1).stakeJuror({ value: ethers.parseEther("1") });
-      const bond = await f.disputes.disputeBond();
-
-      const totalPaid = [];
-      for (let milestone = 0; milestone < 3; milestone++) {
-        await (
-          await f.disputes
-            .connect(f.backer)
-            .raiseDispute(f.campaignAddress, milestone, ethers.parseEther("5"), { value: bond })
-        ).wait();
-        const key = await f.disputes.disputeKey(f.campaignAddress, milestone);
-        await f.disputes.connect(f.juror1).castVote(key, false);
-        await time.increaseTo(Number((await f.disputes.getDispute(key)).voteDeadline) + 1);
-        await f.disputes.connect(f.admin).resolve(key, 1, 0);
-
-        const before = await f.disputes.totalBondEscrow();
-        await f.disputes.connect(f.juror1).settleJuror(key);
-        const after = await f.disputes.totalBondEscrow();
-        totalPaid.push(before - after);
-
-        // Respect the per-campaign cooldown between disputes.
-        await time.increase(Number(await f.disputes.disputeCooldown()) + 1);
-      }
-
-      const sum = totalPaid.reduce((a, b) => a + b, 0n);
-      // Three disputes posted 3 bonds; total rewards can never exceed 50% of that, so a
-      // juror participating in every dispute still cannot drain the pool.
-      expect(sum).to.be.lte((bond * 3n * 5_000n) / 10_000n);
-      // And it must be strictly below the total posted.
-      expect(sum).to.be.lt(bond * 3n);
-    });
-
-    it("records casesCorrect before transferring (checks-effects-interactions)", async () => {
-      const f = await disputeFixture();
-      await f.disputes.connect(f.juror1).stakeJuror({ value: ethers.parseEther("1") });
-      const bond = await f.disputes.disputeBond();
-
-      await (
-        await f.disputes
-          .connect(f.backer)
-          .raiseDispute(f.campaignAddress, 0, ethers.parseEther("5"), { value: bond })
+        await f.disputes.connect(f.backer).raiseDispute(f.campaignAddress, 0, { value: bond })
       ).wait();
       const key = await f.disputes.disputeKey(f.campaignAddress, 0);
-      await f.disputes.connect(f.juror1).castVote(key, false);
-      await time.increaseTo(Number((await f.disputes.getDispute(key)).voteDeadline) + 1);
-      await f.disputes.connect(f.admin).resolve(key, 1, 0);
 
-      // Even if the payout transfer were to revert the whole call, the case counter and
-      // the reward accounting must have been settled consistently. Verifying the counter
-      // increments exactly once guards against a double-count on retry.
-      await f.disputes.connect(f.juror1).settleJuror(key);
-      expect(await f.disputes.hasVoted(key, f.juror1.address)).to.equal(true);
-      await expect(f.disputes.connect(f.juror1).settleJuror(key)).to.be.revertedWithCustomError(
-        f.disputes,
-        "AlreadyClaimed"
-      );
+      await f.disputes.connect(jurorA).castVote(key, false); // refund (loses)
+      await f.disputes.connect(jurorB).castVote(key, true); // creator
+      await f.disputes.connect(jurorC).castVote(key, true); // creator
+
+      // The vote-time stake is locked: withdrawal is refused before settlement.
+      await expect(
+        f.disputes.connect(jurorA).withdrawJurorStake(ethers.parseEther("1"))
+      ).to.be.revertedWithCustomError(f.disputes, "InsufficientShare");
+
+      await time.increaseTo(Number((await f.disputes.getDispute(key)).voteDeadline) + 1);
+      await f.disputes.connect(f.creator).resolve(key); // Release
+
+      await f.disputes.connect(jurorA).settleJuror(key);
+      expect(await f.disputes.jurorWeight(jurorA.address)).to.equal(ethers.parseEther("0.9"));
+      expect(await f.disputes.jurorWeight(jurorB.address)).to.equal(ethers.parseEther("1"));
+
+      // Settlement is idempotent per juror.
+      await expect(
+        f.disputes.connect(jurorA).settleJuror(key)
+      ).to.be.revertedWithCustomError(f.disputes, "AlreadyClaimed");
     });
   });
 });

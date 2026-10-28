@@ -366,7 +366,15 @@ export interface EventRepository {
   markConfirmedUpTo(chainId: number, blockNumber: number): number;
   deleteFromBlock(chainId: number, blockNumber: number): number;
   cursorFor(chainId: number, contract: string): number;
-  setCursor(chainId: number, contract: string, blockNumber: number): void;
+  cursorHashFor(chainId: number, contract: string, blockNumber: number): string | null;
+  setCursor(chainId: number, contract: string, blockNumber: number, blockHash?: string | null): void;
+  /**
+   * Clears all derived rows and cursors for a chain. Called after a reorg that is deeper
+   * than the confirmation window: rebuilding from scratch is slower than a targeted
+   * rollback, but it cannot leave a partially-rewound projection (stale campaign totals,
+   * milestone states, dispute rows) behind.
+   */
+  resetAll(chainId: number): void;
 }
 
 export const eventRepository: EventRepository = {
@@ -376,8 +384,9 @@ export const eventRepository: EventRepository = {
       .prepare(
         `INSERT OR IGNORE INTO events (
            chain_id, tx_hash, log_index, contract, event_name,
-           campaign_address, actor, block_number, block_time, args_json, confirmed
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           campaign_address, actor, block_number, block_hash, block_time,
+           args_json, confirmed
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         chainId,
@@ -388,6 +397,7 @@ export const eventRepository: EventRepository = {
         e.campaign_address ?? null,
         e.actor ?? null,
         e.block_number,
+        e.block_hash ?? null,
         e.block_time,
         JSON.stringify(e.args ?? {}),
         e.confirmed ?? 0
@@ -404,18 +414,51 @@ export const eventRepository: EventRepository = {
   },
 
   /**
-   * Deletes every event at or above `blockNumber`. This is the reorg rollback: when the
-   * chain reports a block at or below our high-water mark that no longer matches, the
-   * rows we derived from the orphaned blocks must be removed before re-indexing.
+   * Deletes every row derived from a block at or above `blockNumber`, then rewinds the
+   * cursors. The raw event log alone is not enough: contributions and votes carry the
+   * block number, while disputes and credentials carry the block timestamp, so both are
+   * used to find orphaned derived rows.
    */
   deleteFromBlock(chainId, blockNumber) {
     const db = getDb();
     return transaction(() => {
+      const cutoff = db
+        .prepare(
+          "SELECT MIN(block_time) AS t FROM events WHERE chain_id = ? AND block_number >= ?"
+        )
+        .get(chainId, blockNumber) as { t: number | null } | undefined;
+      const cutoffTime = cutoff?.t ?? null;
+
+      db.prepare(
+        "DELETE FROM contributions WHERE chain_id = ? AND block_number >= ?"
+      ).run(chainId, blockNumber);
+      db.prepare("DELETE FROM votes WHERE chain_id = ? AND block_number >= ?").run(
+        chainId,
+        blockNumber
+      );
+
+      if (cutoffTime !== null) {
+        db.prepare(
+          "DELETE FROM disputes WHERE chain_id = ? AND raised_at >= ?"
+        ).run(chainId, cutoffTime);
+        db.prepare(
+          "DELETE FROM credentials WHERE chain_id = ? AND issued_at >= ?"
+        ).run(chainId, cutoffTime);
+      }
+
+      // Campaigns created in the orphaned range lose all their children via the
+      // ON DELETE CASCADE foreign key. Campaigns created earlier keep their identity but
+      // may hold stale totals; those are repaired by resetAll() on a deep reorg.
+      db.prepare(
+        "DELETE FROM campaigns WHERE chain_id = ? AND created_block >= ?"
+      ).run(chainId, blockNumber);
+      db.prepare("DELETE FROM reputation_cache WHERE chain_id = ?").run(chainId);
+
       const result = db
         .prepare("DELETE FROM events WHERE chain_id = ? AND block_number >= ?")
         .run(chainId, blockNumber);
       db.prepare(
-        "UPDATE indexer_cursor SET last_block = ?, updated_at = ? WHERE chain_id = ? AND last_block >= ?"
+        "UPDATE indexer_cursor SET last_block = ?, last_block_hash = NULL, updated_at = ? WHERE chain_id = ? AND last_block >= ?"
       ).run(blockNumber - 1, Math.floor(Date.now() / 1000), chainId, blockNumber);
       return Number(result.changes);
     });
@@ -429,15 +472,45 @@ export const eventRepository: EventRepository = {
     return row ? Number(row.last_block) : -1;
   },
 
-  setCursor(chainId, contract, blockNumber) {
+  cursorHashFor(chainId, contract, blockNumber) {
+    const db = getDb();
+    const row = db
+      .prepare(
+        "SELECT last_block, last_block_hash FROM indexer_cursor WHERE chain_id = ? AND contract = ?"
+      )
+      .get(chainId, contract) as
+      | { last_block: number; last_block_hash: string | null }
+      | undefined;
+    if (!row || Number(row.last_block) !== blockNumber) return null;
+    return row.last_block_hash;
+  },
+
+  setCursor(chainId, contract, blockNumber, blockHash = null) {
     const db = getDb();
     db.prepare(
-      `INSERT INTO indexer_cursor (chain_id, contract, last_block, updated_at)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO indexer_cursor (chain_id, contract, last_block, last_block_hash, updated_at)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(chain_id, contract) DO UPDATE SET
-         last_block = excluded.last_block,
-         updated_at = excluded.updated_at`
-    ).run(chainId, contract, blockNumber, Math.floor(Date.now() / 1000));
+         last_block      = excluded.last_block,
+         last_block_hash = excluded.last_block_hash,
+         updated_at      = excluded.updated_at`
+    ).run(chainId, contract, blockNumber, blockHash, Math.floor(Date.now() / 1000));
+  },
+
+  resetAll(chainId) {
+    const db = getDb();
+    transaction(() => {
+      // Children first so the cascade path is not required for correctness.
+      db.prepare("DELETE FROM milestones WHERE chain_id = ?").run(chainId);
+      db.prepare("DELETE FROM contributions WHERE chain_id = ?").run(chainId);
+      db.prepare("DELETE FROM votes WHERE chain_id = ?").run(chainId);
+      db.prepare("DELETE FROM disputes WHERE chain_id = ?").run(chainId);
+      db.prepare("DELETE FROM credentials WHERE chain_id = ?").run(chainId);
+      db.prepare("DELETE FROM reputation_cache WHERE chain_id = ?").run(chainId);
+      db.prepare("DELETE FROM campaigns WHERE chain_id = ?").run(chainId);
+      db.prepare("DELETE FROM events WHERE chain_id = ?").run(chainId);
+      db.prepare("DELETE FROM indexer_cursor WHERE chain_id = ?").run(chainId);
+    });
   },
 };
 

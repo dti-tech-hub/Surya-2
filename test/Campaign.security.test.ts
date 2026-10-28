@@ -228,14 +228,20 @@ describe("Security invariants", () => {
       );
       await verifier.waitForDeployment();
 
+      const Reputation = await ethers.getContractFactory("ReputationRegistry");
+      const reputation = await Reputation.deploy(creator.address);
+      await reputation.waitForDeployment();
+
       const Factory = await ethers.getContractFactory("CampaignFactory");
       const factory = await Factory.deploy(
         await verifier.getAddress(),
+        await reputation.getAddress(),
         creator.address,
         treasury.address
       );
       await factory.waitForDeployment();
       await verifier.connect(creator).setRegistrar(await factory.getAddress(), true);
+      await reputation.connect(creator).setRegistrar(await factory.getAddress(), true);
 
       for (const v of [verifier1, verifier2, verifier3]) {
         await verifier.connect(v).stakeVerifier({ value: ethers.parseEther("1") });
@@ -291,14 +297,20 @@ describe("Security invariants", () => {
       );
       await verifier.waitForDeployment();
 
+      const Reputation = await ethers.getContractFactory("ReputationRegistry");
+      const reputation = await Reputation.deploy(creator.address);
+      await reputation.waitForDeployment();
+
       const Factory = await ethers.getContractFactory("CampaignFactory");
       const factory = await Factory.deploy(
         await verifier.getAddress(),
+        await reputation.getAddress(),
         creator.address,
         treasury.address
       );
       await factory.waitForDeployment();
       await verifier.connect(creator).setRegistrar(await factory.getAddress(), true);
+      await reputation.connect(creator).setRegistrar(await factory.getAddress(), true);
 
       for (const v of [verifier1, verifier2, verifier3]) {
         await verifier.connect(v).stakeVerifier({ value: ethers.parseEther("1") });

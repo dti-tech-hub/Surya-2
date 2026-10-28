@@ -42,8 +42,8 @@ than using OpenZeppelin `Clones`.
   the gas saving.
 - Campaign escrow is the highest-value state in the system. A separate deployed
   address per campaign gives a smaller blast radius and much simpler incident analysis.
-- Measured `createCampaign` cost is ~2.44M gas (dominated by the `Campaign` deployment),
-  of which the factory's own bookkeeping is a small fraction.
+- Measured `createCampaign` cost is ~2.58M gas (median 2,576,665; dominated by the
+  `Campaign` deployment), of which the factory's own bookkeeping is a small fraction.
 
 **Consequence / future work.** If campaign creation cost proves material, the natural
 change is to drop `immutable` for `factory` and `verifier` (read them from the clone's
@@ -118,9 +118,11 @@ bounded and configurable rather than open-ended.
 
 ## D-007. No PII on-chain
 
-**Decision.** Evidence is referenced by IPFS CID plus a keccak256 digest. Verifiable
-Credentials are recorded as credential hashes plus revocation status. Names, documents,
-nationality, and any other personal data are never written to chain state.
+**Decision.** Evidence is referenced by a content-addressed identifier (an IPFS CID when
+pinned to Pinata or a local Kubo node, otherwise a local CIDv1 raw hash) plus a keccak256
+digest. Verifiable Credentials are recorded as credential hashes plus revocation status.
+Names, documents, nationality, and any other personal data are never written to chain
+state.
 
 **Reasoning.** On-chain data is permanent and publicly readable. Storing a KYC document
 hash is already a meaningful privacy commitment; storing the document or biometric data
@@ -189,29 +191,101 @@ comparison can be run against either.
 
 ---
 
-## Measured gas figures
+## D-011. `viaIR: true` for the build and coverage
 
-These are **measured**, produced by `REPORT_GAS=true npx hardhat test` on the local
-Hardhat network, and written to `benchmarks/results/gas-report-local.txt`. They are not
-estimates. They are *also* not L1-vs-L2 comparisons: no testnet deployment has been run,
-so no cross-network cost claims are made yet.
+**Decision.** The Solidity compiler runs with `viaIR: true` (optimizer on, 200 runs) for
+normal builds and for `solidity-coverage`.
 
-| Operation | Gas (avg) | Notes |
-|---|---|---|
-| `CampaignFactory.createCampaign` | 2,444,146 | Includes deploying the `Campaign` contract |
-| `Campaign.submitEvidence` | 164,216 | Includes opening a verification round |
-| `Campaign.contribute` | 136,502 | First contribution for an address writes the backer list too |
-| `Campaign.resolveMilestone` | 131,042 | Includes `settleRound` tally |
-| `Campaign.claimRefund` | 79,156 | Pro-rata payout |
-| `MilestoneVerifier.castVote` | 76,904 | Weighted vote |
-| `Campaign.claimCreatorBalance` | 56,786 | Pull payout |
-| `Campaign.failCampaign` | 49,545 | |
-| `Campaign.closeFunding` | 42,193 | |
-| Deploy `CampaignFactory` | 3,347,220 | |
-| Deploy `MilestoneVerifier` | 2,535,047 | |
+**Reasoning.** `solidity-coverage` instruments every statement and branch, which adds
+stack pressure. On `DisputeResolution.settleJuror` the instrumented build hit the EVM
+stack-depth limit with the legacy pipeline. Enabling the IR pipeline removes that limit
+and lets coverage run against the same source that the tests exercise.
+
+**Consequence.** Compile time is higher. The measured gas figures in
+`benchmarks/results/bench-hardhat.json` were produced from this build, so they describe
+the bytecode that is actually tested and deployed locally.
+
+---
+
+## D-012. TypeChain bindings generated at compile time
+
+**Decision.** `@typechain/hardhat` generates `typechain-types/` during `hardhat compile`,
+and `npm run typecheck` runs `hardhat compile && tsc --noEmit`.
+
+**Reasoning.** Before this, `tsc --noEmit` had no knowledge of the contract ABIs: every
+`ethers.getContractAt` returned `BaseContract`, so the `typecheck` script failed on
+hundreds of valid contract calls. The choice was either to add generated typings or to
+degrade the script with `any` casts. Generated typings make the check meaningful.
+
+**Consequence.** `typechain-types/` is generated output and is git-ignored (`.gitignore`
+line 9); a fresh clone must run `npx hardhat compile` (or `npm run typecheck`, which does
+it first) before invoking `tsc` directly. The test-only `ReentrantBacker` getter was
+renamed from `target` to `targetContract` because a public getter named `target` collides
+with ethers' `BaseContract.target` property in the generated interface.
+
+---
+
+## D-013. Node's built-in `node:sqlite` instead of `better-sqlite3`
+
+**Decision.** The backend uses `DatabaseSync` from Node's built-in `node:sqlite` module.
+The package declares `engines.node >= 22.5`, the version in which the module became
+available.
+
+**Reasoning.** `better-sqlite3` is a native addon that requires a node-gyp build. That
+build failed on the Node 24 toolchain used for development. `node:sqlite` ships with the
+runtime, needs no compiler toolchain, and provides the synchronous API the repository
+layer is written against. The trade-off is a higher minimum Node version and a younger
+API surface than the long-established package.
+
+**Consequence.** The SQLite file remains the indexer's rebuildable cache, not the system
+of record (D-009). WAL mode, foreign keys, and `busy_timeout` are set explicitly in
+`backend/src/db/client.ts`; those pragmas are part of the durability and concurrency
+argument, not optional tuning.
+
+---
+
+## D-014. CI reports coverage and Slither findings without gating on them
+
+**Decision.** The contract compile and test suite gate every push and pull request.
+Coverage generation and Slither run in parallel reporting jobs with
+`continue-on-error: true`. Their artifacts are uploaded, but a coverage threshold or a
+Slither finding count does not fail the build.
+
+**Reasoning.** A coverage threshold that has not been calibrated against this codebase
+would create pressure to add low-value tests rather than to exercise meaningful branches.
+The current Slither baseline includes three High-impact `arbitrary-send-eth` results that
+are triaged false positives; failing on the raw count would train contributors to ignore
+the security job. The two historical High-severity bugs that were real have regression
+tests in `test/Security.regression.test.ts`.
+
+**Consequence.** Regressions remain visible in CI logs and artifacts but are not
+automatically blocking. Turning coverage or finding counts into gates is future work and
+requires a triaged baseline first. This is a reporting policy, not a claim that the
+current findings are harmless.
+
+---
+
+## Measured gas figures — `MEASURED` (local EVM)
+
+These are **measured** EVM gas values, produced by
+`npx hardhat run benchmarks/run-benchmarks.ts` and written to
+`benchmarks/results/bench-hardhat.json` (five samples per operation; median shown).
+`claimRefund` is not sampled by that harness; the two values below come from the
+lifecycle run in `evaluation/results/demo-lifecycle.json`. They are not estimates.
+
+| Operation | Median gas | Observed range / notes |
+|---|---:|---|
+| `CampaignFactory.createCampaign` | 2,576,665 | 2,576,665–2,593,765; includes deploying `Campaign` |
+| `Campaign.contribute` | 38,627 | First contribution for a new address: 139,523 (writes the backer list) |
+| `Campaign.submitEvidence` | 189,140 | First submission: 206,240; includes opening a round |
+| `MilestoneVerifier.castVote` | 119,427 | 119,427–119,427 |
+| `Campaign.resolveMilestone` | 184,614 | First resolution: 221,752; includes `settleRound` tally |
+| `Campaign.claimCreatorBalance` | 55,064 | 55,064–55,064 |
+| `Campaign.claimRefund` | 83,970 / 66,870 | Two lifecycle backers; not a benchmark median |
 
 **Caveats that matter.** Gas on the local EVM is not the same as gas on a real network:
 L2 execution gas is cheap but carries an L1 data-availability cost that dominates the
 true price of a transaction, so a local measurement alone cannot answer the "is L2
-cheaper" question. That comparison requires the benchmark scripts in `benchmarks/` run
-against both networks, which has not yet been done.
+cheaper" question. The cost model in `benchmarks/results/l1-vs-l2-comparison.json` is
+`SIMULATED` and excludes L1 data-availability fees. No public testnet deployment has been
+run, so no measured cross-network latency, throughput, or cost claims are made.

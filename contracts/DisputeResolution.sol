@@ -11,58 +11,54 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
  *
  * @dev Purpose
  *
- *      Milestone verification (O3) answers "was the work delivered?". This module
- *      answers the harder question: "the verifier panel was wrong or the creator was
- *      wrong — who gets the escrow?". It exists because pure reputation voting has no
- *      recourse when the electorate is itself compromised.
+ *      Milestone verification answers "was the work delivered?". This module answers
+ *      the harder question: "the verifier panel was wrong or the creator was wrong —
+ *      who gets the escrow?". It exists because pure reputation voting has no recourse
+ *      when the electorate is itself compromised.
  *
  *      Flow
- *        1. A backer holding at least {MIN_DISPUTE_SHARE_BPS} of their contribution
- *           raises a dispute against a milestone, posting {disputeBond} as a bond.
- *        2. Jurors are drawn from the {MilestoneVerifier} staked pool. Each juror votes
- *           once; weight is stake-derived.
- *        3. After {votingWindow}, anyone calls {resolve}. The outcome is one of
- *           REFUND / RELEASE / PARTIAL.
- *        4. Bonds and juror stakes settle. Reputation is updated on-chain.
+ *        1. A backer with a non-zero contribution raises a dispute against a milestone,
+ *           posting {disputeBond}. The campaign is queried on-chain for the caller's
+ *           contribution; a caller-supplied number is no longer trusted.
+ *        2. Jurors are drawn from the staked pool. Each juror votes once; the vote
+ *           weight is stake-derived and snapshotted at vote time.
+ *        3. After {votingWindow}, anyone calls {resolve}. The outcome is derived from
+ *           the tally, not chosen by an administrator:
+ *              refund weight > creator weight  -> REFUND
+ *              creator weight > refund weight  -> RELEASE
+ *              tie                              -> PARTIAL (50/50 split)
+ *              no votes                         -> REFUND (fail closed for backers)
+ *        4. {resolve} calls {Campaign.resolveDispute}, so the verdict actually moves
+ *           escrow. An appeal path that cannot change the outcome is not an appeal.
+ *        5. Bonds and juror stakes settle. Jurors must settle to unlock their stake.
  *
  *      Anti-whale voting
  *      -----------------
- *      Pure stake weighting lets one large juror decide a dispute. The weight curve is
- *      therefore configurable:
- *
- *          weight = stake                                    (linear, weightCurveExponent == 1e18)
- *          weight = stake / sqrt(stake) * k                  (quadratic, exponent == 0.5e18)
- *
- *      implemented as `weight = k * (stake ^ exponent / 1e18)`, with the constant `k`
- *      chosen so that a reference stake of 1 token maps to 1 weight unit. Quadratic
- *      weighting means doubling your stake buys only ~1.41x the influence, so influence
- *      grows sublinearly with capital. This bounds whale dominance at the cost of
- *      requiring more jurors for the same total weight.
+ *      Weight can be linear (exponent 1e18) or sublinear (exponent 0.5e18, i.e. square
+ *      root). Doubling stake then buys only ~1.41x influence.
  *
  *      Griefing
- *      ---------
- *      Raising a dispute costs a bond, and the bond is slashed when the dispute is
- *      found baseless. A spammer must therefore post capital per dispute. Disputes also
- *      carry a per-campaign cooldown so one backer cannot repeatedly stall a campaign.
+ *      --------
+ *      Raising a dispute costs a bond. A dispute with no votes is treated as a refund
+ *      and the raiser's bond is slashed to the treasury, so spamming empty disputes is
+ *      not free. A per-campaign cooldown bounds repeated stalling.
  *
- *      Oracle interaction
- *      ------------------
- *      The milestone verification outcome is read from {MilestoneVerifier} to establish
- *      what the campaign currently believes. The dispute verdict can *override* it,
- *      which is the entire point: an appeal path that cannot change the outcome is not
- *      an appeal path.
+ *      Known limitation
+ *      ----------------
+ *      There is no commit-reveal phase. Votes are visible in the mempool and jurors can
+ *      follow the crowd; this is documented in security/THREAT_MODEL.md.
  */
 contract DisputeResolution is ReentrancyGuard {
     /* -------------------------------------------------------------------- */
     /*                                  Types                                */
     /* -------------------------------------------------------------------- */
 
-    /// @notice Outcome of a resolved dispute.
+    /// @notice Outcome of a resolved dispute. Values are shared with {Campaign}.
     enum Outcome {
         None,
         Refund, // remaining escrow returned to backers
         Release, // tranche released to creator
-        Partial // partial split, see {partialBps}
+        Partial // tie: split the disputed tranche 50/50
     }
 
     enum DisputeState {
@@ -84,13 +80,15 @@ contract DisputeResolution is ReentrancyGuard {
         DisputeState state;
         Outcome outcome;
         uint16 partialBps; // creator share when outcome == Partial
-        bool raiserBondSlashed;
-        uint256 journal;
-        uint256 bondEscrowed; // total bond posted to THIS dispute, for reward payouts
+        uint256 bondEscrowed; // all bonds posted to THIS dispute
+        uint256 raiserBond; // bond posted by the raiser specifically
+        uint256 rewardPool; // bond share reserved for correct jurors
+        bool bondsSettled;
     }
 
     struct Juror {
         uint128 stake;
+        uint128 lockedStake;
         bool staked;
         uint256 casesVoted;
         uint256 casesCorrect;
@@ -101,9 +99,9 @@ contract DisputeResolution is ReentrancyGuard {
     /* -------------------------------------------------------------------- */
 
     uint256 public constant BPS = 10_000;
-    uint128 public constant MIN_DISPUTE_SHARE_BPS = 500; // backer needs 5% of own stake in campaign
     uint256 public constant MIN_STAKE = 1e17; // 0.1 token to serve as juror
-    uint256 public constant REWARD_SHARE_BPS = 5_000; // 50% of a dispute's bond funds rewards
+    uint256 public constant REWARD_SHARE_BPS = 5_000; // 50% of a losing raiser bond
+    uint16 public constant DEFAULT_JUROR_SLASH_BPS = 1_000; // 10% of vote-time stake
 
     /* -------------------------------------------------------------------- */
     /*                                Immutables                             */
@@ -119,13 +117,13 @@ contract DisputeResolution is ReentrancyGuard {
     address public admin;
     address public treasury;
 
-    /// @notice Campaigns whose disputes this module may hear.
     mapping(address => bool) public isJudgeable;
-    mapping(address => bool) public isArbiter;
+    mapping(address => bool) public isRegistrar;
 
     uint256 public disputeBond = 0.05 ether;
     uint64 public votingWindow = 3 days;
     uint64 public disputeCooldown = 1 days;
+    uint16 public jurorSlashBps = DEFAULT_JUROR_SLASH_BPS;
 
     /// @notice Weight curve exponent, 1e18 = linear, 5e17 = sqrt (quadratic).
     uint256 public weightCurveExponent = 1e18;
@@ -141,6 +139,10 @@ contract DisputeResolution is ReentrancyGuard {
     mapping(bytes32 => mapping(address => bool)) public hasVoted;
     /// @notice (disputeKey, juror) => votedForCreator
     mapping(bytes32 => mapping(address => bool)) public jurorVote;
+    /// @notice (disputeKey, juror) => weight snapshotted at vote time.
+    mapping(bytes32 => mapping(address => uint256)) public jurorVoteWeight;
+    /// @notice (disputeKey, juror) => stake snapshotted at vote time (for slashing).
+    mapping(bytes32 => mapping(address => uint256)) public jurorVoteStake;
     mapping(bytes32 => mapping(address => bool)) public jurorClaimed;
 
     uint256 public totalJurorStake;
@@ -151,9 +153,15 @@ contract DisputeResolution is ReentrancyGuard {
     /* -------------------------------------------------------------------- */
 
     event AdminTransferred(address indexed from, address indexed to);
-    event ArbiterUpdated(address indexed arbiter, bool allowed);
+    event RegistrarUpdated(address indexed registrar, bool allowed);
     event JudgeableUpdated(address indexed campaign, bool allowed);
-    event ParametersUpdated(uint256 disputeBond, uint64 votingWindow, uint64 disputeCooldown, uint256 weightCurveExponent);
+    event ParametersUpdated(
+        uint256 disputeBond,
+        uint64 votingWindow,
+        uint64 disputeCooldown,
+        uint256 weightCurveExponent,
+        uint16 jurorSlashBps
+    );
     event DisputeRaised(
         bytes32 indexed disputeKey,
         address indexed campaign,
@@ -161,7 +169,7 @@ contract DisputeResolution is ReentrancyGuard {
         address raiser,
         uint256 bond
     );
-    event DisputeChallenged(bytes32 indexed disputeKey, address indexed challenger);
+    event DisputeChallenged(bytes32 indexed disputeKey, address indexed challenger, uint256 bond);
     event DisputeVoted(bytes32 indexed disputeKey, address indexed juror, bool forCreator, uint256 weight);
     event DisputeResolved(
         bytes32 indexed disputeKey,
@@ -179,9 +187,12 @@ contract DisputeResolution is ReentrancyGuard {
     /* -------------------------------------------------------------------- */
 
     error NotAdmin(address caller);
-    error NotArbiter(address caller);
+    error NotRegistrar(address caller);
     error NotJudgeable(address campaign);
     error ZeroAddress();
+    error NotBacker(address caller);
+    error InvalidMilestone(uint256 index);
+    error CampaignNotDisputable(address campaign);
     error InsufficientShare(uint256 provided, uint256 required);
     error CooldownActive(uint256 retryAfter);
     error DisputeAlreadyOpen(bytes32 disputeKey);
@@ -190,11 +201,11 @@ contract DisputeResolution is ReentrancyGuard {
     error NotOpen(bytes32 disputeKey);
     error AlreadyVoted(bytes32 disputeKey, address juror);
     error NotAStakedJuror(address juror);
-    error QuorumNotMet(uint128 voted, uint128 required);
     error AlreadyClaimed(bytes32 disputeKey, address juror);
-    error InsufficientEscrow(uint256 required, uint256 available);
-    error TransferFailed();
     error InvalidBps(uint256 value);
+    error TransferFailed();
+    error EscrowUpdateFailed();
+    error NoVotes(bytes32 disputeKey);
 
     /* -------------------------------------------------------------------- */
     /*                                 Modifiers                             */
@@ -202,11 +213,6 @@ contract DisputeResolution is ReentrancyGuard {
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin(msg.sender);
-        _;
-    }
-
-    modifier onlyArbiter() {
-        if (!isArbiter[msg.sender]) revert NotArbiter(msg.sender);
         _;
     }
 
@@ -229,10 +235,11 @@ contract DisputeResolution is ReentrancyGuard {
         admin = newAdmin;
     }
 
-    function setArbiter(address arbiter, bool allowed) external onlyAdmin {
-        if (arbiter == address(0)) revert ZeroAddress();
-        isArbiter[arbiter] = allowed;
-        emit ArbiterUpdated(arbiter, allowed);
+    /// @notice Grants or revokes the right to register judgeable campaigns.
+    function setRegistrar(address registrar, bool allowed) external onlyAdmin {
+        if (registrar == address(0)) revert ZeroAddress();
+        isRegistrar[registrar] = allowed;
+        emit RegistrarUpdated(registrar, allowed);
     }
 
     function setJudgeable(address campaign, bool allowed) external onlyAdmin {
@@ -241,13 +248,29 @@ contract DisputeResolution is ReentrancyGuard {
         emit JudgeableUpdated(campaign, allowed);
     }
 
-    function setParameters(uint256 bond, uint64 window, uint64 cooldown, uint256 exponent) external onlyAdmin {
+    /// @notice Registers a campaign deployed by the authorised factory.
+    function registerCampaign(address campaign) external {
+        if (msg.sender != admin && !isRegistrar[msg.sender]) revert NotRegistrar(msg.sender);
+        if (campaign == address(0)) revert ZeroAddress();
+        isJudgeable[campaign] = true;
+        emit JudgeableUpdated(campaign, true);
+    }
+
+    function setParameters(
+        uint256 bond,
+        uint64 window,
+        uint64 cooldown,
+        uint256 exponent,
+        uint16 slashBps
+    ) public onlyAdmin {
         if (exponent > 1e18) revert InvalidBps(exponent);
+        if (slashBps > BPS) revert InvalidBps(slashBps);
         disputeBond = bond;
         votingWindow = window;
         disputeCooldown = cooldown;
         weightCurveExponent = exponent;
-        emit ParametersUpdated(bond, window, cooldown, exponent);
+        jurorSlashBps = slashBps;
+        emit ParametersUpdated(bond, window, cooldown, exponent, slashBps);
     }
 
     /* -------------------------------------------------------------------- */
@@ -258,21 +281,25 @@ contract DisputeResolution is ReentrancyGuard {
     function stakeJuror() external payable {
         if (msg.value < MIN_STAKE) revert InsufficientShare(msg.value, MIN_STAKE);
         Juror storage j = jurors[msg.sender];
-        if (!j.staked) {
-            j.staked = true;
-        }
+        j.staked = true;
         j.stake += uint128(msg.value);
         totalJurorStake += msg.value;
     }
 
-    /// @notice Withdraws juror stake.
-    function withdrawJurorStake(uint256 amount) external {
+    /// @notice Withdraws unlocked juror stake.
+    /// @dev Stake used in a live dispute is locked until that juror calls {settleJuror}.
+    ///      This closes the vote-then-withdraw evasion where a juror could escape a
+    ///      minority slash by draining their stake before settlement.
+    function withdrawJurorStake(uint256 amount) external nonReentrant {
         Juror storage j = jurors[msg.sender];
         if (!j.staked) revert NotAStakedJuror(msg.sender);
-        if (amount == 0 || amount > j.stake) revert InsufficientShare(amount, j.stake);
+        uint256 available = uint256(j.stake) - uint256(j.lockedStake);
+        if (amount == 0 || amount > available) revert InsufficientShare(amount, available);
+
         j.stake -= uint128(amount);
         totalJurorStake -= amount;
         if (j.stake == 0) j.staked = false;
+
         (bool ok, ) = payable(msg.sender).call{ value: amount }("");
         if (!ok) revert TransferFailed();
     }
@@ -281,9 +308,7 @@ contract DisputeResolution is ReentrancyGuard {
     function jurorWeight(address juror) public view returns (uint256) {
         uint256 stake = jurors[juror].stake;
         if (stake == 0) return 0;
-        // weight = stake^exponent, normalized so 1 token -> 1 weight.
         if (weightCurveExponent == 1e18) return stake;
-        // sqrt(stake) for exponent == 5e17; general integer root is overkill here.
         return _sqrt(stake);
     }
 
@@ -298,36 +323,37 @@ contract DisputeResolution is ReentrancyGuard {
 
     /**
      * @notice Raises a dispute against a campaign milestone.
-     * @param campaign Campaign address; must be registered as judgeable.
-     * @param milestoneIndex Milestone being disputed.
-     * @param backerContribution The raiser's contribution to the campaign, used to check
-     *        the minimum-share requirement. Supplied by the caller and cross-checked
-     *        against the campaign where the arbiter is present.
+     * @dev The caller must be an on-chain backer of `campaign`; the contribution is
+     *      read from the campaign, not supplied by the caller.
      */
-    function raiseDispute(address campaign, uint256 milestoneIndex, uint256 backerContribution)
+    function raiseDispute(address campaign, uint256 milestoneIndex)
         external
         payable
         returns (bytes32 key)
     {
         if (!isJudgeable[campaign]) revert NotJudgeable(campaign);
 
+        (bool stateOk, uint256 campaignState) = _staticUint(campaign, "state()");
+        if (stateOk && campaignState >= 2) revert CampaignNotDisputable(campaign);
+
+        (bool countOk, uint256 count) = _staticUint(campaign, "milestoneCount()");
+        if (countOk && milestoneIndex >= count) revert InvalidMilestone(milestoneIndex);
+
+        (bool contributionOk, uint256 contribution) =
+            _staticUint(campaign, "contributionOf(address)", msg.sender);
+        if (!contributionOk || contribution == 0) revert NotBacker(msg.sender);
+
         key = disputeKey(campaign, milestoneIndex);
         Dispute storage d = disputes[key];
-        // A dispute may be re-raised only after the previous one was resolved; this
-        // prevents holding a campaign hostage by keeping a dispute permanently open.
         if (d.state == DisputeState.Voting) revert DisputeAlreadyOpen(key);
 
-        // Cooldown to stop one backer from re-stalling a campaign repeatedly.
         uint64 last = lastDisputeRaisedAt[campaign];
         if (last != 0 && block.timestamp < last + disputeCooldown) {
             revert CooldownActive(last + disputeCooldown);
         }
-        // Minimum economic stake to raise.
-        if (backerContribution == 0) revert InsufficientShare(0, MIN_DISPUTE_SHARE_BPS);
         if (msg.value < disputeBond) revert InsufficientShare(msg.value, disputeBond);
 
         totalBondEscrow += msg.value;
-        d.bondEscrowed += msg.value;
         lastDisputeRaisedAt[campaign] = uint64(block.timestamp);
 
         d.campaign = campaign;
@@ -336,19 +362,30 @@ contract DisputeResolution is ReentrancyGuard {
         d.raisedAt = uint64(block.timestamp);
         d.voteDeadline = uint64(block.timestamp) + votingWindow;
         d.state = DisputeState.Voting;
+        d.outcome = Outcome.None;
+        d.partialBps = 0;
+        d.forRefundWeight = 0;
+        d.forCreatorWeight = 0;
+        d.votedWeight = 0;
+        d.bondEscrowed = msg.value;
+        d.raiserBond = msg.value;
+        d.rewardPool = 0;
+        d.bondsSettled = false;
 
         emit DisputeRaised(key, campaign, milestoneIndex, msg.sender, msg.value);
     }
 
-    /// @notice Allows a second party to post a bond to signal independent agreement.
+    /// @notice Allows a second party to post an additional bond.
+    /// @dev Challenge bonds are anti-grief deposits; they are not tied to a vote and are
+    ///      routed to the treasury when the dispute resolves.
     function challengeDispute(address campaign, uint256 milestoneIndex) external payable {
         bytes32 key = disputeKey(campaign, milestoneIndex);
         Dispute storage d = disputes[key];
         if (d.state != DisputeState.Voting) revert NotOpen(key);
         if (msg.value < disputeBond) revert InsufficientShare(msg.value, disputeBond);
         totalBondEscrow += msg.value;
-        disputes[key].bondEscrowed += msg.value;
-        emit DisputeChallenged(key, msg.sender);
+        d.bondEscrowed += msg.value;
+        emit DisputeChallenged(key, msg.sender, msg.value);
     }
 
     /// @notice Casts a stake-weighted juror vote.
@@ -357,17 +394,21 @@ contract DisputeResolution is ReentrancyGuard {
         if (d.state != DisputeState.Voting) revert NotOpen(key);
         if (block.timestamp >= d.voteDeadline) revert VotingStillOpen(d.voteDeadline);
 
-        if (!jurors[msg.sender].staked) revert NotAStakedJuror(msg.sender);
+        Juror storage j = jurors[msg.sender];
+        if (!j.staked) revert NotAStakedJuror(msg.sender);
         if (hasVoted[key][msg.sender]) revert AlreadyVoted(key, msg.sender);
 
         uint256 weight = jurorWeight(msg.sender);
-        if (weight == 0) return;
+        if (weight == 0) revert NotAStakedJuror(msg.sender);
 
         hasVoted[key][msg.sender] = true;
         jurorVote[key][msg.sender] = forCreator;
-        jurors[msg.sender].casesVoted += 1;
-        d.votedWeight += uint128(weight);
+        jurorVoteWeight[key][msg.sender] = weight;
+        jurorVoteStake[key][msg.sender] = j.stake;
+        j.lockedStake += uint128(j.stake);
+        j.casesVoted += 1;
 
+        d.votedWeight += uint128(weight);
         if (forCreator) {
             d.forCreatorWeight += uint128(weight);
         } else {
@@ -378,35 +419,54 @@ contract DisputeResolution is ReentrancyGuard {
     }
 
     /**
-     * @notice Resolves a dispute and settles the outcome.
-     * @param outcome The adjudicated outcome. For `Partial`, `partialBps` is the
-     *        creator's share of the disputed tranche in basis points.
-     * @dev Arbiter-gated because the panel result and the escrow disbursement are two
-     *      distinct decisions; the panel tally is enforced here, but the final split is
-     *      an arbiter judgement recorded on-chain for auditability.
+     * @notice Resolves a dispute from the recorded tally.
+     * @dev Permissionless: no administrator chooses the outcome. The verdict is then
+     *      pushed into the campaign, which applies the escrow effect.
      */
-    function resolve(bytes32 key, Outcome outcome, uint16 partialBps) external onlyArbiter {
+    function resolve(bytes32 key) external nonReentrant {
         Dispute storage d = disputes[key];
         if (d.state != DisputeState.Voting) revert NotOpen(key);
         if (block.timestamp < d.voteDeadline) revert VotingStillOpen(d.voteDeadline);
 
-        if (partialBps > BPS && outcome == Outcome.Partial) revert InvalidBps(partialBps);
+        bool noVotes = d.votedWeight == 0;
+        Outcome outcome;
+        uint16 partialBps;
+
+        if (noVotes) {
+            // Fail closed for backers: without a panel decision the creator does not
+            // receive the tranche. The raiser's bond is slashed to deter empty disputes.
+            outcome = Outcome.Refund;
+        } else if (d.forRefundWeight > d.forCreatorWeight) {
+            outcome = Outcome.Refund;
+        } else if (d.forCreatorWeight > d.forRefundWeight) {
+            outcome = Outcome.Release;
+        } else {
+            outcome = Outcome.Partial;
+            partialBps = 5_000; // exact tie: 50/50
+        }
 
         d.state = DisputeState.Resolved;
         d.outcome = outcome;
         d.partialBps = partialBps;
 
-        // Reputation: if the panel leaned for the creator and the dispute resolved
-        // against the creator, that is a signal against their record; otherwise the
-        // creator's record is reinforced.
+        _settleBonds(key, d, outcome, noVotes);
+
+        // The whole point of the appeal: push the verdict into escrow.
+        (bool ok, ) = d.campaign.call(
+            abi.encodeWithSignature(
+                "resolveDispute(uint256,uint8,uint16)",
+                d.milestoneIndex,
+                uint8(outcome),
+                partialBps
+            )
+        );
+        if (!ok) revert EscrowUpdateFailed();
+
         address subject = _campaignCreator(d.campaign);
-        bool creatorFavourable = d.forCreatorWeight > d.forRefundWeight;
-        if (outcome == Outcome.Refund && creatorFavourable) {
-            reputation.recordDispute(subject, false);
-            emit ReputationRecorded(subject, false);
-        } else {
-            reputation.recordDispute(subject, true);
-            emit ReputationRecorded(subject, true);
+        if (subject != address(0)) {
+            bool creatorWon = outcome != Outcome.Refund;
+            reputation.recordDispute(subject, creatorWon);
+            emit ReputationRecorded(subject, creatorWon);
         }
 
         emit DisputeResolved(key, outcome, partialBps, d.forRefundWeight, d.forCreatorWeight);
@@ -421,66 +481,105 @@ contract DisputeResolution is ReentrancyGuard {
     /*                              Settlement                               */
     /* -------------------------------------------------------------------- */
 
+    /// @dev Returns or slashes the raiser bond and reserves the juror reward pool.
+    function _settleBonds(bytes32 key, Dispute storage d, Outcome outcome, bool noVotes) private {
+        uint256 escrow = d.bondEscrowed;
+        uint256 raiserBond = d.raiserBond;
+        d.bondsSettled = true;
+
+        if (escrow == 0) return;
+        totalBondEscrow -= escrow;
+        d.bondEscrowed = 0;
+
+        bool raiserPrevails = outcome == Outcome.Refund && !noVotes;
+        uint256 toTreasury;
+
+        if (raiserPrevails) {
+            if (raiserBond > 0) {
+                (bool ok, ) = payable(d.raiser).call{ value: raiserBond }("");
+                if (!ok) revert TransferFailed();
+                emit BondSettled(key, d.raiser, raiserBond, false);
+            }
+            toTreasury = escrow - raiserBond;
+        } else {
+            // Losing raiser: part of the bond funds correct jurors. With no votes at
+            // all there is nobody to reward, so the entire bond goes to the treasury.
+            uint256 reward = noVotes ? 0 : (raiserBond * REWARD_SHARE_BPS) / BPS;
+            d.rewardPool = reward;
+            toTreasury = escrow - reward;
+            emit BondSettled(key, d.raiser, raiserBond, true);
+        }
+
+        if (toTreasury > 0) {
+            (bool ok, ) = payable(treasury).call{ value: toTreasury }("");
+            if (!ok) revert TransferFailed();
+        }
+    }
+
     /**
-     * @notice Applies the resolved outcome to the calling juror: reward if their vote
-     *         was in the majority, 10% stake slash if it was not.
-     * @dev Called by the juror themselves, not by the arbiter. This matters: the arbiter
-     *      selects the outcome, but the economic consequence must be derived from the
-     *      juror's own recorded vote. Letting the arbiter trigger it would decouple the
-     *      penalty from the vote it is supposed to punish. The function is idempotent
-     *      per (dispute, juror) via {jurorClaimed}.
+     * @notice Applies a resolved dispute's consequences to the calling juror: a reward
+     *         if their vote matched the outcome, a stake slash if it did not. Also
+     *         unlocks the stake snapshotted at vote time.
      */
     function settleJuror(bytes32 key) external nonReentrant {
         Dispute storage d = disputes[key];
         if (d.state != DisputeState.Resolved) revert NotOpen(key);
 
-        if (!hasVoted[key][msg.sender]) return; // non-voters handled separately
+        if (!hasVoted[key][msg.sender]) return;
         if (jurorClaimed[key][msg.sender]) revert AlreadyClaimed(key, msg.sender);
         jurorClaimed[key][msg.sender] = true;
 
-        bool votedForCreator = jurorVote[key][msg.sender];
-        bool correct = (d.outcome == Outcome.Refund && !votedForCreator)
-            || (d.outcome != Outcome.Refund && votedForCreator);
+        Juror storage j = jurors[msg.sender];
+        uint256 weight = jurorVoteWeight[key][msg.sender];
+        uint256 voteStake = jurorVoteStake[key][msg.sender];
 
-        // Split into helpers to keep the stack shallow: the coverage build instruments
-        // this function and pushes it over the 16-slot limit otherwise.
-        if (correct) {
-            _settleCorrectJuror(key, d);
+        // Unlock the stake that was reserved at vote time, whatever the outcome.
+        if (j.lockedStake >= voteStake) {
+            j.lockedStake -= uint128(voteStake);
         } else {
-            _settleIncorrectJuror(key);
+            j.lockedStake = 0;
+        }
+
+        bool votedForCreator = jurorVote[key][msg.sender];
+        bool correct;
+        if (d.outcome == Outcome.Refund) {
+            correct = !votedForCreator;
+        } else if (d.outcome == Outcome.Release) {
+            correct = votedForCreator;
+        } else {
+            // A tie is not a clear repudiation of either side; reward all voters and
+            // slash nobody.
+            correct = true;
+        }
+
+        if (correct) {
+            _settleCorrectJuror(key, d, j, weight);
+        } else {
+            _settleIncorrectJuror(key, j, voteStake);
         }
     }
 
-    /**
-     * @dev Rewards a juror whose vote matched the outcome.
-     *
-     *      The reward is drawn from `d.bondEscrowed` — the bond attributable to *this*
-     *      dispute — and shared among majority jurors in proportion to voting weight.
-     *
-     *      An earlier revision paid `totalBondEscrow / 100`, a flat 1% of the ENTIRE bond
-     *      pool, to every correct juror regardless of their minority share. Because
-     *      settlement is permitted once per dispute per juror, a juror who participated in
-     *      N disputes could withdraw roughly N% of the pool, draining funds escrowed
-     *      against other disputes' bond posters. Binding the reward to this dispute's own
-     *      bond makes the total payout bounded by REWARD_SHARE_BPS of what was posted here.
-     */
-    function _settleCorrectJuror(bytes32 key, Dispute storage d) private {
-        Juror storage j = jurors[msg.sender];
-        uint256 majorityWeight = d.forCreatorWeight > d.forRefundWeight
-            ? uint256(d.forCreatorWeight)
-            : uint256(d.forRefundWeight);
-        uint256 myWeight = jurorWeight(msg.sender);
+    function _settleCorrectJuror(
+        bytes32 key,
+        Dispute storage d,
+        Juror storage j,
+        uint256 weight
+    ) private {
+        uint256 correctWeight = d.outcome == Outcome.Refund
+            ? uint256(d.forRefundWeight)
+            : uint256(d.forCreatorWeight);
+        if (d.outcome == Outcome.Partial) {
+            correctWeight = d.votedWeight; // everyone is correct in a tie
+        }
 
         uint256 reward;
-        if (majorityWeight > 0 && myWeight > 0) {
-            reward = (d.bondEscrowed * REWARD_SHARE_BPS / BPS) * myWeight / majorityWeight;
+        if (d.rewardPool > 0 && correctWeight > 0 && weight > 0) {
+            reward = (d.rewardPool * weight) / correctWeight;
+            if (reward > d.rewardPool) reward = d.rewardPool;
+            d.rewardPool -= reward;
         }
 
-        // Effects before interactions.
         j.casesCorrect += 1;
-        if (reward > 0) {
-            totalBondEscrow -= reward;
-        }
         reputation.recordVerifierVote(msg.sender, true);
         emit JurorSettled(key, msg.sender, reward, 0);
 
@@ -490,46 +589,26 @@ contract DisputeResolution is ReentrancyGuard {
         }
     }
 
-    /// @dev Slashes a juror whose vote contradicted the settled outcome.
-    function _settleIncorrectJuror(bytes32 key) private {
-        Juror storage j = jurors[msg.sender];
-        uint256 slash = j.stake / 10; // 10% slash for voting against outcome
+    function _settleIncorrectJuror(bytes32 key, Juror storage j, uint256 voteStake) private {
+        uint256 staked = j.stake;
+        uint256 base = voteStake < staked ? voteStake : staked;
+        uint256 slash = (base * jurorSlashBps) / BPS;
 
-        // Effects before interactions.
-        j.stake -= uint128(slash);
-        totalJurorStake -= slash;
-        totalBondEscrow += slash;
+        if (slash > 0) {
+            j.stake -= uint128(slash);
+            totalJurorStake -= slash;
+            if (j.stake == 0) j.staked = false;
+        }
+
         reputation.recordVerifierVote(msg.sender, false);
-        reputation.recordSlash(msg.sender, slash);
+        if (slash > 0) {
+            reputation.recordSlash(msg.sender, slash);
+        }
         emit JurorSettled(key, msg.sender, 0, slash);
 
-        (bool ok, ) = payable(treasury).call{ value: slash }("");
-        if (!ok) revert TransferFailed();
-    }
-
-    /// @notice Returns or slashes the raising backer's bond once the dispute resolves.
-    function settleBond(bytes32 key) external onlyArbiter {
-        Dispute storage d = disputes[key];
-        if (d.state != DisputeState.Resolved) revert NotOpen(key);
-        if (d.raiserBondSlashed) revert AlreadyClaimed(key, d.raiser);
-        d.raiserBondSlashed = true;
-
-        // If the dispute resolved against the raiser (for the creator), the bond is
-        // returned; otherwise it is slashed to the treasury as an anti-grief measure.
-        bool raiserPrevailed = d.outcome == Outcome.Refund;
-        uint256 bond = disputeBond;
-        if (bond > totalBondEscrow) bond = totalBondEscrow;
-
-        if (raiserPrevailed) {
-            totalBondEscrow -= bond;
-            (bool ok, ) = payable(d.raiser).call{ value: bond }("");
+        if (slash > 0) {
+            (bool ok, ) = payable(treasury).call{ value: slash }("");
             if (!ok) revert TransferFailed();
-            emit BondSettled(key, d.raiser, bond, false);
-        } else {
-            totalBondEscrow -= bond;
-            (bool ok, ) = payable(treasury).call{ value: bond }("");
-            if (!ok) revert TransferFailed();
-            emit BondSettled(key, d.raiser, bond, true);
         }
     }
 
@@ -542,6 +621,27 @@ contract DisputeResolution is ReentrancyGuard {
         (bool ok, bytes memory data) = campaign.staticcall(abi.encodeWithSignature("creator()"));
         if (ok && data.length >= 32) return abi.decode(data, (address));
         return address(0);
+    }
+
+    /// @dev Static-calls a view returning one uint256, tolerating non-supporting targets.
+    function _staticUint(address target, string memory signature)
+        private
+        view
+        returns (bool ok, uint256 value)
+    {
+        bytes memory data;
+        (ok, data) = target.staticcall(abi.encodeWithSignature(signature));
+        if (ok && data.length >= 32) value = abi.decode(data, (uint256));
+    }
+
+    function _staticUint(address target, string memory signature, address arg)
+        private
+        view
+        returns (bool ok, uint256 value)
+    {
+        bytes memory data;
+        (ok, data) = target.staticcall(abi.encodeWithSignature(signature, arg));
+        if (ok && data.length >= 32) value = abi.decode(data, (uint256));
     }
 
     /// @dev Integer square root (Babylonian), used for quadratic juror weighting.

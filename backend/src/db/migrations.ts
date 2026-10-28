@@ -196,4 +196,19 @@ export const migrations: Migration[] = [
     );
   `,
   },
+  {
+    id: 2,
+    name: "reorg_hashes",
+    up: `
+    -- A cursor without the hash of the block it points at cannot detect a reorg:
+    -- "block N exists" is true on both the old and the new fork. Store the hash and
+    -- compare it against the canonical chain before trusting the cursor.
+    ALTER TABLE indexer_cursor ADD COLUMN last_block_hash TEXT;
+    ALTER TABLE events ADD COLUMN block_hash TEXT;
+
+    -- Reorg recovery rebuilds derived tables from events, so the lookup that finds
+    -- every row above a height needs an index.
+    CREATE INDEX idx_events_block_scan ON events (chain_id, block_number);
+  `,
+  },
 ];

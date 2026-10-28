@@ -17,6 +17,9 @@ import rateLimit from "express-rate-limit";
 import { config } from "./config.js";
 import { logger } from "./services/logger.js";
 import { campaignsRouter } from "./routes/campaigns.js";
+import { evidenceRouter } from "./routes/evidence.js";
+import { identityRouter } from "./routes/identity.js";
+import { researchRouter } from "./routes/research.js";
 import { healthRouter, systemRouter } from "./routes/system.js";
 
 export function createApp(): Express {
@@ -79,6 +82,9 @@ export function createApp(): Express {
   // /api/campaigns. Mounting it at /api would let "/api/stats" match "/:address" and
   // shadow every sibling route.
   app.use("/api/campaigns", campaignsRouter);
+  app.use("/api", evidenceRouter);
+  app.use("/api", identityRouter);
+  app.use("/api", researchRouter);
   app.use("/api", systemRouter);
 
   app.use((req, res) => {

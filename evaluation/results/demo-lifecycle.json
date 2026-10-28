@@ -1,0 +1,525 @@
+{
+  "status": "MEASURED",
+  "label": "Live local Hardhat EVM run. Measures contract behaviour, gas, and lifecycle outcomes only; not public-testnet latency, throughput, or L1 data-availability cost.",
+  "generatedAt": "2026-10-27T08:01:47.684Z",
+  "network": {
+    "name": "localhost",
+    "chainId": "31337",
+    "rpc": "http://127.0.0.1:8545",
+    "manifestPath": "deployments/localhost.json"
+  },
+  "deployment": {
+    "ReputationRegistry": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "CredentialRegistry": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+    "MilestoneVerifier": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    "DisputeResolution": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
+    "CampaignFactory": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9"
+  },
+  "actors": {
+    "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "treasury": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "creator": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    "backer1": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+    "backer2": "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
+    "verifier1": "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
+    "verifier2": "0x976EA74026E726554dB657fA54763abd0C3a0aa9",
+    "verifier3": "0x14dC79964da2C08b23698B3D3cc7Ca32193d9955"
+  },
+  "campaign": {
+    "address": "0x3dE2Da43d4c1B137E385F36b400507c1A24401f8",
+    "creator": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    "goal": "10000000000000000000",
+    "fundingDeadline": 1793260924,
+    "trancheBps": [
+      6000,
+      4000
+    ],
+    "milestoneDeadlines": [
+      1795680124,
+      1798272124
+    ],
+    "totalContributed": "12000000000000000000",
+    "totalReleased": "7200000000000000000",
+    "totalRefunded": "4800000000000000000",
+    "escrowBalance": "0",
+    "finalState": "Failed",
+    "creatorBalanceClaimed": "7200000000000000000"
+  },
+  "evidence": {
+    "specifications": [
+      {
+        "filename": "demo-milestone-0-spec.txt",
+        "sha256": "af020c034aaf9abf3d678bd8dd9d65f677b7147a210eb68a1975e9f93a3df3c3",
+        "keccak256": "0xac1b016175e0c84a665c6f062a8456e518e53d815bf70053945862f0f4e8244d",
+        "size": 153,
+        "cid": "bafkreifpaigagsvptk7t2z4l3doz2zpwo63ri6rbb23iuglv5h4tupptym",
+        "provider": "local-content-store",
+        "isIpfs": false
+      },
+      {
+        "filename": "demo-milestone-1-spec.txt",
+        "sha256": "2494cc8360ba0aa38568e09fca87f720be02a7fe8806935ca144c05ed4571a10",
+        "keccak256": "0xfc26773faea25f8a39fb7cce767f76b2b4f0e6759fa7dd17f3fca5f090995504",
+        "size": 123,
+        "cid": "bafkreibestgigyf2bkryk2hat7fip5zaxybkp7uia2jvzikeybpnivy2ca",
+        "provider": "local-content-store",
+        "isIpfs": false
+      }
+    ],
+    "milestone0": {
+      "filename": "demo-milestone-0-evidence.txt",
+      "sha256": "aab65d785f4b308620418e230a3dc8acc14ad85b72bfeef4605f58e1ddc27457",
+      "keccak256": "0x4c09ec80b74971b8205e017db613f0df119a4e82a38f24d51a2cc6424c85b3d6",
+      "size": 156,
+      "cid": "bafkreifkwzoxqx2lgcdcaqmoemfd3sfmyffnqw3sx7xpiyc7ldq53qtuk4",
+      "provider": "local-content-store",
+      "isIpfs": false
+    },
+    "milestone1": {
+      "filename": "demo-milestone-1-evidence.txt",
+      "sha256": "4e4b7d5b4829b51cbec91bb8f492864197544ffc8155a2fe310d8c307a9fd486",
+      "keccak256": "0xa73cba5ca080308eab9ed635f2e6ad189ff066790e32ad4c62880466f3421cca",
+      "size": 134,
+      "cid": "bafkreicojn6vwsbjwuol5si3xd2jfbsbs5ke77ebkwrp4minrqyhvh6uqy",
+      "provider": "local-content-store",
+      "isIpfs": false
+    },
+    "note": "Providers are reported verbatim. `local-content-store` is a local CIDv1 raw store, not an IPFS pin; `not-published` means the backend was offline."
+  },
+  "verifierEconomics": {
+    "stakesAtStart": {
+      "verifier1": "2000000000000000000",
+      "verifier2": "2000000000000000000",
+      "verifier3": "2000000000000000000"
+    },
+    "verifier3AfterMilestone0Slash": "1600000000000000000",
+    "verifier3AfterNonVoterPenalty": "1280000000000000000"
+  },
+  "outcomes": {
+    "funding": {
+      "goalMet": true,
+      "totalContributed": "12000000000000000000",
+      "overfundedBy": "2000000000000000000"
+    },
+    "milestone0": {
+      "state": "Verified",
+      "trancheBps": 6000,
+      "released": "7200000000000000000",
+      "creatorWithdrew": "7200000000000000000"
+    },
+    "milestone1": {
+      "state": "Rejected"
+    },
+    "dispute": {
+      "key": "0xbaa57f361b778c58e8604bc954f4a439e9e247a4f59be22e6baf7b338e151d41",
+      "outcome": "Refund",
+      "partialBps": "0",
+      "forRefundWeight": "2000000000000000000",
+      "forCreatorWeight": "1000000000000000000",
+      "raiserBond": "50000000000000000",
+      "campaignStateAfter": "Failed"
+    },
+    "refunds": {
+      "backer1": {
+        "quoted": "2800000000000000000",
+        "balanceBefore": "9947999954631691173480",
+        "balanceAfter": "9943799016593787957025"
+      },
+      "backer2": {
+        "quoted": "2000000000000000000",
+        "balanceBefore": "9929999982221752071738",
+        "balanceAfter": "9926999621218257015442"
+      }
+    }
+  },
+  "reputation": {
+    "creator": {
+      "score": "3891",
+      "tier": "Bronze",
+      "profile": [
+        "1",
+        "1",
+        "0",
+        "1",
+        "0",
+        "1",
+        "0",
+        "0",
+        "0",
+        "1793433729"
+      ]
+    },
+    "verifiers": {
+      "verifier1": {
+        "profile": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "1",
+          "1",
+          "0",
+          "1793865743"
+        ],
+        "score": "999",
+        "tier": "0",
+        "stake": "2000000000000000000"
+      },
+      "verifier2": {
+        "profile": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "1",
+          "1",
+          "0",
+          "1793865744"
+        ],
+        "score": "999",
+        "tier": "0",
+        "stake": "2000000000000000000"
+      },
+      "verifier3": {
+        "profile": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "1",
+          "100000000000000000",
+          "1793865745"
+        ],
+        "score": "0",
+        "tier": "0",
+        "stake": "1280000000000000000"
+      }
+    }
+  },
+  "steps": [
+    {
+      "stage": "setup",
+      "action": "verifier verifier-1 already staked",
+      "status": "SKIPPED",
+      "detail": "2.0 ETH active"
+    },
+    {
+      "stage": "setup",
+      "action": "verifier verifier-2 already staked",
+      "status": "SKIPPED",
+      "detail": "2.0 ETH active"
+    },
+    {
+      "stage": "setup",
+      "action": "verifier verifier-3 already staked",
+      "status": "SKIPPED",
+      "detail": "2.0 ETH active"
+    },
+    {
+      "stage": "setup",
+      "action": "juror verifier-1 stakes 1 ETH",
+      "status": "MEASURED",
+      "txHash": "0xc29bdaaff10e312ab9225c482d8712ffbb840c3c225c0281e1b67bb211b54099",
+      "gasUsed": "88079",
+      "blockNumber": 20,
+      "detail": "1 ETH"
+    },
+    {
+      "stage": "setup",
+      "action": "juror verifier-2 stakes 1 ETH",
+      "status": "MEASURED",
+      "txHash": "0x6c0c5bd313603c607ef3f60629ef8782f94791955beab8876b1814b47d1fda75",
+      "gasUsed": "70979",
+      "blockNumber": 21,
+      "detail": "1 ETH"
+    },
+    {
+      "stage": "setup",
+      "action": "juror verifier-3 stakes 1 ETH",
+      "status": "MEASURED",
+      "txHash": "0x0427de0c6c90e2659ce017518b4e5a8cacb02ce818b6e38a294e2c3e557fe7d5",
+      "gasUsed": "70979",
+      "blockNumber": 22,
+      "detail": "1 ETH"
+    },
+    {
+      "stage": "campaign",
+      "action": "publish milestone specifications",
+      "status": "MEASURED",
+      "detail": "spec0=bafkreifpaigagsvptk7t2z4l3doz2zpwo63ri6rbb23iuglv5h4tupptym (local-content-store), spec1=bafkreibestgigyf2bkryk2hat7fip5zaxybkp7uia2jvzikeybpnivy2ca (local-content-store)"
+    },
+    {
+      "stage": "campaign",
+      "action": "createCampaign (goal 10 ETH, 2 milestones 60/40)",
+      "status": "MEASURED",
+      "txHash": "0x83a2784222b316751227b91f98597ead7cb2e1393630d6c144559fd54e3fee0d",
+      "gasUsed": "2644703",
+      "blockNumber": 23,
+      "detail": "factory deploys + registers campaign, verifier and dispute module"
+    },
+    {
+      "stage": "funding",
+      "action": "backer-1 contributes 7 ETH",
+      "status": "MEASURED",
+      "txHash": "0x0a16ab84ac7b15e9830b3c2fb7c9fa81aa4bddc71e4b7f01041bd843c90a864f",
+      "gasUsed": "139523",
+      "blockNumber": 24,
+      "detail": "overfunding: total 12 ETH vs 10 ETH goal"
+    },
+    {
+      "stage": "funding",
+      "action": "backer-2 contributes 5 ETH",
+      "status": "MEASURED",
+      "txHash": "0x3979a09314854b6ba796f90d0c4b3d015fa5505b34baf13c796990f846112f3f",
+      "gasUsed": "105323",
+      "blockNumber": 25,
+      "detail": "overfunding: total 12 ETH vs 10 ETH goal"
+    },
+    {
+      "stage": "funding",
+      "action": "closeFunding",
+      "status": "MEASURED",
+      "txHash": "0x7e8a8feab57d840c8e3ea51f70c55ee3cf0dd99a3df8052eb317a3acc2f3f42a",
+      "gasUsed": "41226",
+      "blockNumber": 27,
+      "detail": "goal met"
+    },
+    {
+      "stage": "milestone-0",
+      "action": "submitEvidence",
+      "status": "MEASURED",
+      "txHash": "0x06b9de55bf7aebf4808fcedc5a4542240cf16fee80565ed4392579fcfded6735",
+      "gasUsed": "251760",
+      "blockNumber": 28,
+      "detail": "CID bafkreifkwzoxqx2lgcdcaqmoemfd3sfmyffnqw3sx7xpiyc7ldq53qtuk4 (local-content-store); digest 0x4c09ec80b74971b8205e017db613f0df119a4e82a38f24d51a2cc6424c85b3d6"
+    },
+    {
+      "stage": "milestone-0",
+      "action": "verifier-1 votes Approve",
+      "status": "MEASURED",
+      "txHash": "0x6f453d0ce900085b3aa65977058c1d6c757f670aa2e6f93add174da6cad552c0",
+      "gasUsed": "119427",
+      "blockNumber": 29
+    },
+    {
+      "stage": "milestone-0",
+      "action": "verifier-2 votes Approve",
+      "status": "MEASURED",
+      "txHash": "0xb6779daed8bc45ce32b621602d7c253c0fe232a6c4a2a8122c7ec7631c89e8d0",
+      "gasUsed": "85227",
+      "blockNumber": 30
+    },
+    {
+      "stage": "milestone-0",
+      "action": "verifier-3 votes Reject (minority)",
+      "status": "MEASURED",
+      "txHash": "0x3101782e6424a25e1bb408563ef79ef79214878d7d389b39723e82341c209ce7",
+      "gasUsed": "85377",
+      "blockNumber": 31
+    },
+    {
+      "stage": "milestone-0",
+      "action": "resolveMilestone",
+      "status": "MEASURED",
+      "txHash": "0x91a969be73fc15b75db9caf5f5c53e0f7fb77868ba4e535ebc78654e407dea22",
+      "gasUsed": "221752",
+      "blockNumber": 33
+    },
+    {
+      "stage": "milestone-0",
+      "action": "verifier-1 claimSettlement",
+      "status": "MEASURED",
+      "txHash": "0x2903be82995abc0c7b5635f0cff690bd50f18e45330ed965eff57ce4948cca85",
+      "gasUsed": "60919",
+      "blockNumber": 34,
+      "detail": "correct majority vote"
+    },
+    {
+      "stage": "milestone-0",
+      "action": "verifier-2 claimSettlement",
+      "status": "MEASURED",
+      "txHash": "0xd2c23f9dd11da16f95036e18d843e5beca9f0e387c48e96f76b8133fc172e0d1",
+      "gasUsed": "60919",
+      "blockNumber": 35,
+      "detail": "correct majority vote"
+    },
+    {
+      "stage": "milestone-0",
+      "action": "verifier-3 claimSettlement",
+      "status": "MEASURED",
+      "txHash": "0xbef7a5267c40f5a4706a5774f79563226a60272fe1091d909dfde43e6c9419f8",
+      "gasUsed": "100458",
+      "blockNumber": 36,
+      "detail": "minority vote slashed at 20% of vote-time stake"
+    },
+    {
+      "stage": "milestone-0",
+      "action": "claimCreatorBalance",
+      "status": "MEASURED",
+      "txHash": "0x1a8f75355c8c70340cd7fc7e2799e213598e4824ee8bcaab2e564054ed463ebb",
+      "gasUsed": "55064",
+      "blockNumber": 37,
+      "detail": "7.2 ETH released"
+    },
+    {
+      "stage": "milestone-1",
+      "action": "submitEvidence",
+      "status": "MEASURED",
+      "txHash": "0x44bc5d945f4ea38e6ac377e4f87dd1d56530ad306d10e22c40ecf6c5bfa7d411",
+      "gasUsed": "234672",
+      "blockNumber": 38,
+      "detail": "CID bafkreicojn6vwsbjwuol5si3xd2jfbsbs5ke77ebkwrp4minrqyhvh6uqy (local-content-store); digest 0xa73cba5ca080308eab9ed635f2e6ad189ff066790e32ad4c62880466f3421cca"
+    },
+    {
+      "stage": "milestone-1",
+      "action": "verifier-1 votes Reject",
+      "status": "MEASURED",
+      "txHash": "0x991a31c6fa7a67fb923f69350cf4035df75697d80f731f01efc8058c84973134",
+      "gasUsed": "119589",
+      "blockNumber": 39
+    },
+    {
+      "stage": "milestone-1",
+      "action": "verifier-2 votes Reject",
+      "status": "MEASURED",
+      "txHash": "0x67fd1d688c2756fd4b0ad693af94eda934c212d635dc964ce0103742143bcfe6",
+      "gasUsed": "85389",
+      "blockNumber": 40
+    },
+    {
+      "stage": "milestone-1",
+      "action": "verifier-3 abstains",
+      "status": "MEASURED",
+      "detail": "deliberate non-voter for penalty demonstration"
+    },
+    {
+      "stage": "milestone-1",
+      "action": "resolveMilestone",
+      "status": "MEASURED",
+      "txHash": "0xdb1a845b73431bef0d98a02f594a56e9803bcf7fe4b0dcf11df54fea18d83d80",
+      "gasUsed": "109503",
+      "blockNumber": 42
+    },
+    {
+      "stage": "milestone-1",
+      "action": "penalizeNonVoter(verifier-3)",
+      "status": "MEASURED",
+      "txHash": "0x435e38e9bff3d31e397ce5c85ae24e6ab625fa8c4c452ba2660d565c2d5618cb",
+      "gasUsed": "77883",
+      "blockNumber": 43,
+      "detail": "permissionless enforcement; 20% of current stake"
+    },
+    {
+      "stage": "milestone-1",
+      "action": "verifier-1 claimSettlement",
+      "status": "MEASURED",
+      "txHash": "0x5d5192426624bb4722adcbe6742a6e5680c6ec56756d22efaf1f40a14423bc1b",
+      "gasUsed": "90515",
+      "blockNumber": 44,
+      "detail": "correct majority vote"
+    },
+    {
+      "stage": "milestone-1",
+      "action": "verifier-2 claimSettlement",
+      "status": "MEASURED",
+      "txHash": "0x184c8e12993446f106c82e3c9bd20bbfc0615a3428f8d6522d513ef7597ec0aa",
+      "gasUsed": "90515",
+      "blockNumber": 45,
+      "detail": "correct majority vote"
+    },
+    {
+      "stage": "dispute",
+      "action": "backer-1 raiseDispute(milestone 1)",
+      "status": "MEASURED",
+      "txHash": "0xf480bab5c5a77f662ae37efb12717b61822c851b9dff585343a43c90cb4e9dc4",
+      "gasUsed": "251321",
+      "blockNumber": 46,
+      "detail": "bond 0.05 ETH; caller must be an on-chain backer"
+    },
+    {
+      "stage": "dispute",
+      "action": "juror-1 votes Refund",
+      "status": "MEASURED",
+      "txHash": "0xc60fb3cf6034e67425cf077da2368c1adf338160cffb43f8a28cf9c628fe363a",
+      "gasUsed": "156286",
+      "blockNumber": 47
+    },
+    {
+      "stage": "dispute",
+      "action": "juror-2 votes Refund",
+      "status": "MEASURED",
+      "txHash": "0x54750d758129b4d37b2fa792fdef90c1f8d87bc9f60a77a52f214bc559e8f5e4",
+      "gasUsed": "139186",
+      "blockNumber": 48
+    },
+    {
+      "stage": "dispute",
+      "action": "juror-3 votes Release (minority)",
+      "status": "MEASURED",
+      "txHash": "0x9680bbfe9675093202643a5e7221b40a39af8b596d5ba65d00b8967573cbb9c2",
+      "gasUsed": "156241",
+      "blockNumber": 49
+    },
+    {
+      "stage": "dispute",
+      "action": "resolve",
+      "status": "MEASURED",
+      "txHash": "0xe8cef83bdabef317ae75172baf4d12460401af5fd6b7380921f220e260fcc838",
+      "gasUsed": "184049",
+      "blockNumber": 51,
+      "detail": "permissionless"
+    },
+    {
+      "stage": "dispute",
+      "action": "juror-1 settleJuror",
+      "status": "MEASURED",
+      "txHash": "0x6d354091aef04c2ed2e8cc59d67b2b818e86e008095a61444a967e227ed723a7",
+      "gasUsed": "153636",
+      "blockNumber": 52
+    },
+    {
+      "stage": "dispute",
+      "action": "juror-2 settleJuror",
+      "status": "MEASURED",
+      "txHash": "0x18331493e5e9e5e48515524c0c6205b62c6ef8b735199d0940e636b9a315ef14",
+      "gasUsed": "153636",
+      "blockNumber": 53
+    },
+    {
+      "stage": "dispute",
+      "action": "juror-3 settleJuror",
+      "status": "MEASURED",
+      "txHash": "0x58ccc9da199afa8d494a35e22d60d2236a43c52c52bca1b60ca0bb1e7b9d8074",
+      "gasUsed": "151433",
+      "blockNumber": 54,
+      "detail": "minority juror slashed at 10% of vote-time stake"
+    },
+    {
+      "stage": "refunds",
+      "action": "backer-1 claimRefund",
+      "status": "MEASURED",
+      "txHash": "0x621393db3ddf6c811257419d9752c59e410d8bd22ae1d10930f32fdb3670f73c",
+      "gasUsed": "83970",
+      "blockNumber": 55,
+      "detail": "2.8 ETH quoted"
+    },
+    {
+      "stage": "refunds",
+      "action": "backer-2 claimRefund",
+      "status": "MEASURED",
+      "txHash": "0x9c7485e8e029074d2536ae36bb17f964006c96a24821145f3695c000b7def86f",
+      "gasUsed": "66870",
+      "blockNumber": 56,
+      "detail": "2.0 ETH quoted"
+    }
+  ],
+  "stepCount": 38,
+  "note": "All transaction hashes and gas values are reproduced on the local Hardhat node. Re-running against a fresh node produces a new campaign and new hashes."
+}

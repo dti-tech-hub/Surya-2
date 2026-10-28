@@ -3,6 +3,8 @@ pragma solidity ^0.8.20;
 
 import { Campaign } from "./Campaign.sol";
 import { MilestoneVerifier } from "./MilestoneVerifier.sol";
+import { ReputationRegistry } from "./ReputationRegistry.sol";
+import { IDisputeModule } from "./interfaces/IDisputeModule.sol";
 
 /**
  * @title CampaignFactory
@@ -25,6 +27,10 @@ contract CampaignFactory {
     mapping(address => bool) public isCampaign;
 
     MilestoneVerifier public immutable verifier;
+    ReputationRegistry public immutable reputation;
+
+    /// @notice Dispute module new campaigns are bound to. Zero disables appeals.
+    address public disputeModule;
 
     address public admin;
     address public immutable treasury;
@@ -38,6 +44,7 @@ contract CampaignFactory {
         uint256 milestoneCount
     );
     event AdminTransferred(address indexed from, address indexed to);
+    event DisputeModuleUpdated(address indexed previous, address indexed current);
 
     error ZeroAddress();
     error NotAdmin(address caller);
@@ -67,16 +74,33 @@ contract CampaignFactory {
 
     /**
      * @param verifier_ Verification registry every deployed campaign reports to.
+     * @param reputation_ Reputation registry every deployed campaign writes to.
      * @param admin_ Administrative owner of the factory.
      * @param treasury_ Default recipient for campaign-level fees and dust.
      */
-    constructor(address verifier_, address admin_, address treasury_) {
-        if (verifier_ == address(0) || admin_ == address(0) || treasury_ == address(0)) {
+    constructor(address verifier_, address reputation_, address admin_, address treasury_) {
+        if (
+            verifier_ == address(0) ||
+            reputation_ == address(0) ||
+            admin_ == address(0) ||
+            treasury_ == address(0)
+        ) {
             revert ZeroAddress();
         }
         verifier = MilestoneVerifier(verifier_);
+        reputation = ReputationRegistry(reputation_);
         admin = admin_;
         treasury = treasury_;
+    }
+
+    /**
+     * @notice Sets the dispute module that newly deployed campaigns are bound to.
+     * @dev Applies to campaigns created after this call. Existing campaigns are
+     *      immutable by design.
+     */
+    function setDisputeModule(address module) external onlyAdmin {
+        emit DisputeModuleUpdated(disputeModule, module);
+        disputeModule = module;
     }
 
     /**
@@ -104,6 +128,7 @@ contract CampaignFactory {
         Campaign campaign = new Campaign(
             msg.sender,
             address(verifier),
+            address(reputation),
             params.treasury == address(0) ? treasury : params.treasury,
             params.goal,
             params.fundingDeadline,
@@ -119,6 +144,17 @@ contract CampaignFactory {
 
         // Only this factory may register campaigns, so this call cannot be spoofed.
         verifier.registerCampaign(campaignAddress);
+
+        // Let the campaign write its own milestone/campaign outcomes to reputation.
+        reputation.registerWriter(campaignAddress);
+
+        // Bind the campaign to the dispute module and make it judgeable. Both calls
+        // are permissioned to this factory, so a creator cannot substitute a malicious
+        // resolver or register an arbitrary contract.
+        if (disputeModule != address(0)) {
+            campaign.setDisputeModule(disputeModule);
+            IDisputeModule(disputeModule).registerCampaign(campaignAddress);
+        }
 
         emit CampaignDeployed(
             campaignAddress,

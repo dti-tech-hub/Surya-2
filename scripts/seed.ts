@@ -2,14 +2,45 @@
  * Seeds the local chain with a realistic campaign so the indexer and dApp have
  * something to display during development.
  *
- * Writes `deployments/hardhat.json`-independent state only to the chain; the backend
- * rebuilds its index from these events. Run with a local node:
+ * Reads the deployment manifest for the active network and writes state only to the
+ * chain; the backend rebuilds its index from these events. Run with a local node:
  *   npx hardhat node                                    # terminal 1
- *   npx hardhat run scripts/seed.ts                      # terminal 2
+ *   npx hardhat run scripts/seed.ts --network localhost  # terminal 2
  */
-import { ethers } from "hardhat";
+import { createHash } from "node:crypto";
+import { ethers, network } from "hardhat";
 
 const DAY = 86_400n;
+
+/**
+ * Computes a CIDv1 (raw codec, sha2-256) over the supplied text.
+ *
+ * These identifiers are content hashes produced by the local content store path, NOT
+ * IPFS pins: nothing is published to an IPFS network. They are used here so the seed
+ * data contains real, reproducible content addresses instead of strings that merely
+ * look like truncated IPFS CIDs.
+ */
+function localCidV1(text: string): string {
+  const digest = createHash("sha256").update(Buffer.from(text, "utf8")).digest();
+  const bytes = Buffer.concat([
+    Buffer.from([0x01, 0x55, 0x12, 0x20]), // cidv1, raw, sha2-256, 32 bytes
+    digest,
+  ]);
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      out += alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += alphabet[(value << (5 - bits)) & 31];
+  return `b${out}`;
+}
 
 async function main() {
   const [deployer, treasury, creator, backer1, backer2, verifier1, verifier2, verifier3] =
@@ -17,12 +48,14 @@ async function main() {
 
   console.log("Seeding local chain...\n");
 
-  // Load the deployment manifest produced by scripts/deploy.ts.
+  // Load the deployment manifest produced by scripts/deploy.ts for the active network.
+  // `network.name` follows `--network`; HARDHAT_NETWORK remains an explicit override.
   const fs = await import("node:fs");
-  const deploymentPath = "deployments/hardhat.json";
+  const networkName = process.env.HARDHAT_NETWORK ?? network.name;
+  const deploymentPath = `deployments/${networkName}.json`;
   if (!fs.existsSync(deploymentPath)) {
     throw new Error(
-      "deployments/hardhat.json not found. Run `npx hardhat run scripts/deploy.ts` first."
+      `${deploymentPath} not found. Run \`npx hardhat run scripts/deploy.ts --network ${networkName}\` first.`
     );
   }
   const deployment = JSON.parse(fs.readFileSync(deploymentPath, "utf8"));
@@ -58,16 +91,17 @@ async function main() {
   };
 
   const nowTs = (await ethers.provider.getBlock("latest"))!.timestamp;
+  const descriptions = [
+    "prototype built and tested",
+    "first 100 units produced",
+    "shipped to backers",
+  ];
   const baseParams = {
     goal: ethers.parseEther("100"),
     fundingDeadline: nowTs + Number(30n * DAY),
     trancheBps: [4_000, 3_500, 2_500],
-    descriptionHashes: [
-      ethers.keccak256(ethers.toUtf8Bytes("prototype built and tested")),
-      ethers.keccak256(ethers.toUtf8Bytes("first 100 units produced")),
-      ethers.keccak256(ethers.toUtf8Bytes("shipped to backers")),
-    ],
-    specificationCIDs: ["bafybeihd1a", "bafybeihd2b", "bafybeihd3c"],
+    descriptionHashes: descriptions.map((text) => ethers.keccak256(ethers.toUtf8Bytes(text))),
+    specificationCIDs: descriptions.map((text) => localCidV1(`specification: ${text}`)),
     milestoneDeadlines: [nowTs + Number(40n * DAY), nowTs + Number(50n * DAY), nowTs + Number(60n * DAY)],
     treasury: ethers.ZeroAddress,
   };
@@ -93,7 +127,7 @@ async function main() {
       ethers.keccak256(ethers.toUtf8Bytes("m0")),
       ethers.keccak256(ethers.toUtf8Bytes("m1")),
     ],
-    specificationCIDs: ["bafybeix1", "bafybeix2"],
+    specificationCIDs: [localCidV1("specification: m0"), localCidV1("specification: m1")],
     // Must be strictly AFTER fundingDeadline; the constructor rejects equal-or-earlier.
     milestoneDeadlines: [
       nowTs + Number(45n * DAY),
@@ -116,6 +150,7 @@ async function main() {
 
   console.log("\nSeeded campaigns:");
   for (const address of deployed) console.log(`  ${address}`);
+  console.log("\n  Specification CIDs above are local content hashes (CIDv1 raw), not IPFS pins.");
   void treasury;
   void verifier1;
 }

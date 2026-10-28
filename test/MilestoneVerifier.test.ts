@@ -103,14 +103,26 @@ describe("MilestoneVerifier incentives", () => {
       const settled = await system.verifier.getRound(campaignAddress, 0);
       expect(settled.outcome).to.equal(1n); // Approve
 
-      // The two correct voters split the reward pool.
-      const poolBefore = await system.verifier.rewardPool();
-      const before1 = await ethers.provider.getBalance(system.verifier1.address);
-      await system.verifier.connect(system.verifier1).claimSettlement(campaignAddress, 0);
-      const after1 = await ethers.provider.getBalance(system.verifier1.address);
+      // The reward pool is reserved to this round at settlement; correct voters draw
+      // from the round's own `rewardPoolShare`, not from a global pool.
+      const roundBefore = await system.verifier.getRound(campaignAddress, 0);
+      expect(roundBefore.rewardPoolShare).to.equal(ethers.parseEther("1"));
 
-      expect(after1 - before1).to.be.gt(0n);
-      expect(poolBefore - (await system.verifier.rewardPool())).to.be.gt(0n);
+      const tx = await system.verifier.connect(system.verifier1).claimSettlement(campaignAddress, 0);
+      const rcpt = await tx.wait();
+      const reward = rcpt!.logs
+        .map((log: any) => {
+          try {
+            return system.verifier.interface.parseLog(log);
+          } catch {
+            return null;
+          }
+        })
+        .find((parsed: any) => parsed?.name === "SettlementClaimed")!.args.reward;
+
+      expect(reward).to.be.gt(0n);
+      const roundAfter = await system.verifier.getRound(campaignAddress, 0);
+      expect(roundAfter.rewardPoolShare).to.be.lt(roundBefore.rewardPoolShare);
     });
 
     it("slashes a verifier who voted against the outcome", async () => {
@@ -212,14 +224,20 @@ describe("MilestoneVerifier incentives", () => {
       );
       await verifier.waitForDeployment();
 
+      const Reputation = await ethers.getContractFactory("ReputationRegistry");
+      const reputation = await Reputation.deploy(creator.address);
+      await reputation.waitForDeployment();
+
       const Factory = await ethers.getContractFactory("CampaignFactory");
       const factory = await Factory.deploy(
         await verifier.getAddress(),
+        await reputation.getAddress(),
         creator.address,
         treasury.address
       );
       await factory.waitForDeployment();
       await verifier.connect(creator).setRegistrar(await factory.getAddress(), true);
+      await reputation.connect(creator).setRegistrar(await factory.getAddress(), true);
 
       for (const v of [verifier1, verifier2]) {
         await verifier.connect(v).stakeVerifier({ value: ethers.parseEther("1") });

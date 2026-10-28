@@ -41,7 +41,9 @@ const CONCURRENCY_LEVELS = (process.env.BENCH_CONCURRENCY ?? "10,50,100")
 
 // Stated cost assumptions. Recorded in the output so any figure can be recomputed or
 // re-priced when these change.
-const GAS_PRICE_GWEI = Number(process.env.BENCH_GAS_PRICE_L1_GWEI ?? 10);
+const GAS_PRICE_GWEI = Number(
+  process.env.BENCH_L1_GWEI ?? process.env.BENCH_GAS_PRICE_L1_GWEI ?? 10,
+);
 const ETH_USD = Number(process.env.BENCH_ETH_USD ?? 2500);
 
 interface Sample {
@@ -60,6 +62,14 @@ interface ThroughputResult {
   failures: number;
 }
 
+interface SerializedSample {
+  operation: string;
+  gasUsed: string;
+  effectiveGasPrice: string;
+  wallClockMs: number;
+  txHash?: string;
+}
+
 interface BenchResult {
   network: string;
   chainId: string;
@@ -70,13 +80,22 @@ interface BenchResult {
     ethUsd: number;
     samples: number;
   };
-  gas: Sample[];
+  gas: SerializedSample[];
   throughput: ThroughputResult[];
   notes: string[];
 }
 
 function now(): number {
   return Date.now();
+}
+
+/**
+ * `effectiveGasPrice` exists on the runtime receipt but is not declared on Hardhat's
+ * `ContractTransactionReceipt` type. Read it defensively instead of assuming it.
+ */
+function receiptGasPrice(receipt: unknown): bigint {
+  const value = (receipt as { effectiveGasPrice?: bigint } | null)?.effectiveGasPrice;
+  return value ?? 0n;
 }
 
 /** Runs `fn` SAMPLES times, recording gas, effective gas price, and wall-clock latency. */
@@ -114,7 +133,7 @@ function median(values: number[]): number {
  * deadlines), so a single fixed deadline computed once would eventually fall into the
  * past and be rejected by the constructor.
  */
-async function freshParams(): Promise<typeof paramsShape> {
+async function freshParams(): Promise<paramsShape> {
   const block = await ethers.provider.getBlock("latest");
   const t = block!.timestamp;
   return {
@@ -139,6 +158,7 @@ interface paramsShape {
   descriptionHashes: string[];
   specificationCIDs: string[];
   milestoneDeadlines: number[];
+  treasury: string;
 }
 
 async function main() {
@@ -192,11 +212,13 @@ async function main() {
   const Factory = await ethers.getContractFactory("CampaignFactory");
   const factory = await Factory.deploy(
     await verifier.getAddress(),
+    await reputation.getAddress(),
     deployer.address,
     treasury.address
   );
   await factory.waitForDeployment();
   await (await verifier.connect(deployer).setRegistrar(await factory.getAddress(), true)).wait();
+  await (await reputation.connect(deployer).setRegistrar(await factory.getAddress(), true)).wait();
 
   // ---- Stake verifiers ---------------------------------------------------
   for (const v of [verifierA, verifierB]) {
@@ -229,7 +251,7 @@ async function main() {
     gasSamples.push({
       operation: "contribute",
       gasUsed: receipt!.gasUsed,
-      effectiveGasPrice: receipt!.effectiveGasPrice ?? 0n,
+      effectiveGasPrice: receiptGasPrice(receipt),
       wallClockMs: now() - start,
       txHash: tx.hash,
     });
@@ -266,7 +288,7 @@ async function main() {
     gasSamples.push({
       operation: "submitEvidence",
       gasUsed: evReceipt!.gasUsed,
-      effectiveGasPrice: evReceipt!.effectiveGasPrice ?? 0n,
+      effectiveGasPrice: receiptGasPrice(evReceipt),
       wallClockMs: now() - start,
       txHash: ev.hash,
     });
@@ -279,7 +301,7 @@ async function main() {
     gasSamples.push({
       operation: "castVote",
       gasUsed: vr!.gasUsed,
-      effectiveGasPrice: vr!.effectiveGasPrice ?? 0n,
+      effectiveGasPrice: receiptGasPrice(vr),
       wallClockMs: 0,
       txHash: vote.hash,
     });
@@ -298,7 +320,7 @@ async function main() {
       gasSamples.push({
         operation: "resolveMilestone",
         gasUsed: resReceipt!.gasUsed,
-        effectiveGasPrice: resReceipt!.effectiveGasPrice ?? 0n,
+        effectiveGasPrice: receiptGasPrice(resReceipt),
         wallClockMs: now() - rStart,
         txHash: res.hash,
       });
@@ -308,7 +330,7 @@ async function main() {
       gasSamples.push({
         operation: "claimCreatorBalance",
         gasUsed: cReceipt!.gasUsed,
-        effectiveGasPrice: cReceipt!.effectiveGasPrice ?? 0n,
+        effectiveGasPrice: receiptGasPrice(cReceipt),
         wallClockMs: 0,
         txHash: claim.hash,
       });

@@ -15,14 +15,16 @@ contract ReentrantBacker {
         ClaimCreatorBalance
     }
 
-    IReentrancyTarget public immutable target;
+    // Named `targetContract` rather than `target` so the generated TypeChain interface
+    // does not collide with ethers' BaseContract.target property.
+    IReentrancyTarget public immutable targetContract;
 
     Attack public attack;
     uint256 public reentrancyAttempts;
     bool public reentrySucceeded;
 
     constructor(IReentrancyTarget target_) {
-        target = target_;
+        targetContract = target_;
     }
 
     receive() external payable {}
@@ -42,9 +44,9 @@ contract ReentrantBacker {
 
     function trigger() external {
         if (attack == Attack.ClaimRefund) {
-            target.claimRefund();
+            targetContract.claimRefund();
         } else if (attack == Attack.ClaimCreatorBalance) {
-            target.claimCreatorBalance();
+            targetContract.claimCreatorBalance();
         }
     }
 
@@ -54,13 +56,13 @@ contract ReentrantBacker {
         if (attack != Attack.None && reentrancyAttempts < 3) {
             reentrancyAttempts += 1;
             if (attack == Attack.ClaimRefund) {
-                try target.claimRefund() {
+                try targetContract.claimRefund() {
                     reentrySucceeded = true;
                 } catch {
                     // Expected: ReentrancyGuard reverts.
                 }
             } else if (attack == Attack.ClaimCreatorBalance) {
-                try target.claimCreatorBalance() {
+                try targetContract.claimCreatorBalance() {
                     reentrySucceeded = true;
                 } catch {
                     // Expected: ReentrancyGuard reverts.

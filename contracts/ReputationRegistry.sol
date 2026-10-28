@@ -103,6 +103,11 @@ contract ReputationRegistry {
     /// @notice system contracts permitted to write reputation events.
     mapping(address => bool) public isWriter;
 
+    /// @notice Contracts (the campaign factory) permitted to register new writers.
+    /// @dev Without this the factory would have to ask the admin key to whitelist every
+    ///      campaign, which is neither scalable nor trust-minimised.
+    mapping(address => bool) public isRegistrar;
+
     mapping(address => Profile) private profiles;
 
     /* -------------------------------------------------------------------- */
@@ -111,6 +116,7 @@ contract ReputationRegistry {
 
     event AdminTransferred(address indexed from, address indexed to);
     event WriterUpdated(address indexed writer, bool allowed);
+    event RegistrarUpdated(address indexed registrar, bool allowed);
     event MilestoneRecorded(address indexed subject, bool onTime, uint256 scoreAfter);
     event CampaignRecorded(address indexed subject, bool completed, uint256 scoreAfter);
     event DisputeRecorded(address indexed subject, bool won, uint256 scoreAfter);
@@ -160,6 +166,23 @@ contract ReputationRegistry {
         if (writer == address(0)) revert ZeroAddress();
         isWriter[writer] = allowed;
         emit WriterUpdated(writer, allowed);
+    }
+
+    /// @notice Grants or revokes the right to register new writers.
+    function setRegistrar(address registrar, bool allowed) external onlyAdmin {
+        if (registrar == address(0)) revert ZeroAddress();
+        isRegistrar[registrar] = allowed;
+        emit RegistrarUpdated(registrar, allowed);
+    }
+
+    /// @notice Registers a system contract as a writer.
+    /// @dev Callable by the admin or a registrar (the campaign factory). Only the
+    ///      factory can reach this for a campaign it just deployed.
+    function registerWriter(address writer) external {
+        if (msg.sender != admin && !isRegistrar[msg.sender]) revert NotWriter(msg.sender);
+        if (writer == address(0)) revert ZeroAddress();
+        isWriter[writer] = true;
+        emit WriterUpdated(writer, true);
     }
 
     /* -------------------------------------------------------------------- */

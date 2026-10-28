@@ -32,6 +32,9 @@ frontend/dist/
 frontend/node_modules/
 frontend/.vite/
 
+# backend build output
+backend/dist/
+
 # test + coverage output
 coverage/
 coverage.json

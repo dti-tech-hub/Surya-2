@@ -12,6 +12,6 @@
     "outDir": "dist",
     "sourceMap": true
   },
-  "include": ["./hardhat.config.ts", "./scripts", "./test", "./benchmarks"],
+  "include": ["./hardhat.config.ts", "./scripts", "./test", "./benchmarks", "./typechain-types"],
   "exclude": ["node_modules", "dist", "backend", "frontend", "ml-service"]
 }

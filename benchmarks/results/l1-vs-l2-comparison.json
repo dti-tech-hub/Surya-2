@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-24T01:20:18.389Z",
-  "model": "execution gas (measured locally) x live gas price x assumed token price",
+  "generatedAt": "2026-10-27T09:21:37.191Z",
+  "model": "execution gas (measured locally) x gas price (live reading or operator assumption) x token price (assumed)",
   "deployedToTestnet": false,
   "networks": [
     {
@@ -13,81 +13,81 @@
       "isL2": false
     },
     {
-      "label": "Polygon Amoy (L2)",
+      "label": "Polygon Amoy (L2 PoS)",
       "chainId": 80002,
-      "gasPriceGweiUsed": 0.05,
+      "gasPriceGweiUsed": 30,
       "gasPriceSource": "operator assumption",
-      "nativeSymbol": "MATIC",
+      "nativeSymbol": "POL",
       "nativeUsdAssumed": 0.5,
       "isL2": true
     }
   ],
   "ratios": {
-    "gasPriceRatio": 200,
+    "gasPriceRatio": 0.3333,
     "tokenPriceRatio": 5000,
-    "combinedCostRatio": 0.04
+    "combinedCostRatio": 1666.6667
   },
   "operations": [
     {
       "operation": "createCampaign",
-      "medianGas": 2096539,
-      "l1Usd": 52.413475,
-      "l2Usd": 0.000052,
-      "l2OverL1Pct": 0,
-      "pctOf5usdL1": 1048.269,
-      "pctOf5usdL2": 0.001
+      "medianGas": 2576665,
+      "l1Usd": 64.416625,
+      "l2Usd": 0.03865,
+      "l2OverL1Pct": 0.06,
+      "pctOf5usdL1": 1288.333,
+      "pctOf5usdL2": 0.773
     },
     {
       "operation": "contribute",
-      "medianGas": 40707,
-      "l1Usd": 1.017675,
-      "l2Usd": 0.000001,
-      "l2OverL1Pct": 0,
-      "pctOf5usdL1": 20.354,
-      "pctOf5usdL2": 0
+      "medianGas": 38627,
+      "l1Usd": 0.965675,
+      "l2Usd": 0.000579,
+      "l2OverL1Pct": 0.06,
+      "pctOf5usdL1": 19.314,
+      "pctOf5usdL2": 0.012
     },
     {
       "operation": "submitEvidence",
-      "medianGas": 163749,
-      "l1Usd": 4.093725,
-      "l2Usd": 0.000004,
-      "l2OverL1Pct": 0,
-      "pctOf5usdL1": 81.875,
-      "pctOf5usdL2": 0
+      "medianGas": 189140,
+      "l1Usd": 4.7285,
+      "l2Usd": 0.002837,
+      "l2OverL1Pct": 0.06,
+      "pctOf5usdL1": 94.57,
+      "pctOf5usdL2": 0.057
     },
     {
       "operation": "castVote",
-      "medianGas": 97157,
-      "l1Usd": 2.428925,
-      "l2Usd": 0.000002,
-      "l2OverL1Pct": 0,
-      "pctOf5usdL1": 48.579,
-      "pctOf5usdL2": 0
+      "medianGas": 119427,
+      "l1Usd": 2.985675,
+      "l2Usd": 0.001791,
+      "l2OverL1Pct": 0.06,
+      "pctOf5usdL1": 59.713,
+      "pctOf5usdL2": 0.036
     },
     {
       "operation": "resolveMilestone",
-      "medianGas": 157543,
-      "l1Usd": 3.938575,
-      "l2Usd": 0.000004,
-      "l2OverL1Pct": 0,
-      "pctOf5usdL1": 78.772,
-      "pctOf5usdL2": 0
+      "medianGas": 184614,
+      "l1Usd": 4.61535,
+      "l2Usd": 0.002769,
+      "l2OverL1Pct": 0.06,
+      "pctOf5usdL1": 92.307,
+      "pctOf5usdL2": 0.055
     },
     {
       "operation": "claimCreatorBalance",
-      "medianGas": 57144,
-      "l1Usd": 1.4286,
-      "l2Usd": 0.000001,
-      "l2OverL1Pct": 0,
-      "pctOf5usdL1": 28.572,
-      "pctOf5usdL2": 0
+      "medianGas": 55064,
+      "l1Usd": 1.3766,
+      "l2Usd": 0.000826,
+      "l2OverL1Pct": 0.06,
+      "pctOf5usdL1": 27.532,
+      "pctOf5usdL2": 0.017
     }
   ],
   "caveats": [
     "Execution gas is measured locally; it is chain-state-independent and therefore applies unchanged to both networks, but it has NOT been confirmed by deploying to either network.",
     "L2 transaction cost here EXCLUDES the L1 data-availability charge for calldata, which on rollups is frequently the dominant cost. L2 figures are therefore optimistically low.",
-    "Gas prices were captured once, at run time, and are volatile. Testnet gas prices in particular do not predict mainnet economics.",
-    "USD conversion uses operator-supplied token prices, which are assumptions, not measurements. Re-run with --eth-usd and --matic-usd to re-price.",
+    "Gas prices are either one live eth_gasPrice reading or an explicit operator assumption. Either way they are volatile, and testnet gas prices do not predict mainnet economics.",
+    "USD conversion uses operator-supplied token prices, which are assumptions, not measurements. Re-run with --eth-usd and --pol-usd to re-price.",
     "No deployment to a public testnet has been performed, so there are no real latency or throughput figures for either network."
   ]
 }

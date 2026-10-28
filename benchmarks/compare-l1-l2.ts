@@ -11,13 +11,16 @@
  *     the same on every EVM that runs the same bytecode. It is therefore legitimate to
  *     compare an L1-measured gas figure against an L2 price.
  *
- *   - Gas price is MEASURED LIVE via `eth_gasPrice` against each network's public RPC
- *     at run time. This is the input that actually differs between L1 and L2.
+ *   - Gas price is read LIVE via `eth_gasPrice` against each network's public RPC at
+ *     run time, unless `BENCH_L1_GWEI` / `BENCH_L2_GWEI` (or the matching flags) supply
+ *     an explicit operator assumption. This is the input that actually differs between
+ *     L1 and L2.
  *
  *   - Native-token price is NOT measured and is NOT hardcoded as a fact. The caller must
- *     supply `--eth-usd`. Because the ETH/MATIC price ratio moves independently of gas,
- *     any cross-chain cost comparison in USD is dominated by that assumption. The script
- *     prints the ratio it used so a reader can re-price the conclusion.
+ *     supply `--eth-usd` and `--pol-usd`. Because the ETH/POL price ratio moves
+ *     independently of gas, any cross-chain cost comparison in USD is dominated by that
+ *     assumption. The script prints the ratio it used so a reader can re-price the
+ *     conclusion.
  *
  *   - The L1 data-availability component of an L2 transaction is NOT included, because
  *     it depends on calldata size and current L1 base fee and is not observable from a
@@ -30,7 +33,8 @@
  *
  * Usage:
  *   npx hardhat run benchmarks/compare-l1-l2.ts
- *   npx hardhat run benchmarks/compare-l1-l2.ts -- --eth-usd 2500 --matic-usd 0.5
+ *   npx hardhat run benchmarks/compare-l1-l2.ts -- --eth-usd 2500 --pol-usd 0.5
+ *   BENCH_L1_GWEI=10 BENCH_L2_GWEI=30 npx hardhat run benchmarks/compare-l1-l2.ts
  */
 import { ethers } from "hardhat";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
@@ -59,10 +63,10 @@ const NETWORKS: NetworkConfig[] = [
   },
   {
     name: "amoy",
-    label: "Polygon Amoy (L2)",
+    label: "Polygon Amoy (L2 PoS)",
     rpc: process.env.AMOY_RPC_URL ?? "https://polygon-amoy-bor-rpc.publicnode.com",
     chainId: 80002,
-    nativeSymbol: "MATIC",
+    nativeSymbol: "POL",
     nativeUsd: 0.5,
     isL2: true,
   },
@@ -124,18 +128,30 @@ function gasPricePlausible(gwei: number): boolean {
  * Hardhat 2 does not forward a bare `--` to scripts, so env vars are the reliable path
  * on this toolchain; both are supported so the script is not tied to one runner.
  */
-function parseArgs(): { ethUsd?: number; maticUsd?: number; l1Gwei?: number; l2Gwei?: number } {
+function parseArgs(): { ethUsd?: number; polUsd?: number; l1Gwei?: number; l2Gwei?: number } {
   const fromEnv = {
     ethUsd: process.env.BENCH_ETH_USD ? Number(process.env.BENCH_ETH_USD) : undefined,
-    maticUsd: process.env.BENCH_MATIC_USD ? Number(process.env.BENCH_MATIC_USD) : undefined,
-    l1Gwei: process.env.BENCH_L1_GWEI ? Number(process.env.BENCH_L1_GWEI) : undefined,
-    l2Gwei: process.env.BENCH_L2_GWEI ? Number(process.env.BENCH_L2_GWEI) : undefined,
+    polUsd: process.env.BENCH_POL_USD
+      ? Number(process.env.BENCH_POL_USD)
+      : process.env.BENCH_MATIC_USD
+        ? Number(process.env.BENCH_MATIC_USD)
+        : undefined,
+    l1Gwei: process.env.BENCH_L1_GWEI
+      ? Number(process.env.BENCH_L1_GWEI)
+      : process.env.BENCH_GAS_PRICE_L1_GWEI
+        ? Number(process.env.BENCH_GAS_PRICE_L1_GWEI)
+        : undefined,
+    l2Gwei: process.env.BENCH_L2_GWEI
+      ? Number(process.env.BENCH_L2_GWEI)
+      : process.env.BENCH_GAS_PRICE_L2_GWEI
+        ? Number(process.env.BENCH_GAS_PRICE_L2_GWEI)
+        : undefined,
   };
   const args = process.argv.slice(2);
-  const out: { ethUsd?: number; maticUsd?: number; l1Gwei?: number; l2Gwei?: number } = {};
+  const out: { ethUsd?: number; polUsd?: number; l1Gwei?: number; l2Gwei?: number } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--eth-usd") out.ethUsd = Number(args[i + 1]);
-    if (args[i] === "--matic-usd") out.maticUsd = Number(args[i + 1]);
+    if (args[i] === "--pol-usd" || args[i] === "--matic-usd") out.polUsd = Number(args[i + 1]);
     if (args[i] === "--l1-gwei") out.l1Gwei = Number(args[i + 1]);
     if (args[i] === "--l2-gwei") out.l2Gwei = Number(args[i + 1]);
   }
@@ -149,12 +165,12 @@ async function main() {
   const networks = NETWORKS.map((n) => ({
     ...n,
     nativeUsd:
-      (n.nativeSymbol === "ETH" ? overrides.ethUsd : overrides.maticUsd) ?? n.nativeUsd,
+      (n.nativeSymbol === "ETH" ? overrides.ethUsd : overrides.polUsd) ?? n.nativeUsd,
   }));
 
   console.log("\n=== L1 vs L2 cost model ===");
   console.log("Execution gas: MEASURED locally on the real contracts.");
-  console.log("Gas price:     MEASURED live via eth_gasPrice at run time.\n");
+  console.log("Gas price:     live eth_gasPrice unless explicitly overridden (then an assumption).\n");
 
   // Fetch live gas prices, tolerating one network being unreachable.
   const prices = new Map<string, bigint | null>();
@@ -217,11 +233,12 @@ async function main() {
   const priceRatio = effL1Gwei / effL2Gwei;
 
   console.log(`\n  L1/L2 gas-price ratio : ${priceRatio.toFixed(2)}x`);
-  console.log(`  ETH/MATIC price ratio : ${(l1.nativeUsd / l2.nativeUsd).toFixed(2)}x`);
-  console.log(`  Combined cost ratio   : ${(priceRatio / (l1.nativeUsd / l2.nativeUsd)).toFixed(3)}x`);
+  console.log(`  ETH/POL price ratio   : ${(l1.nativeUsd / l2.nativeUsd).toFixed(2)}x`);
+  console.log(`  L1/L2 cost ratio      : ${(priceRatio * (l1.nativeUsd / l2.nativeUsd)).toFixed(3)}x`);
   console.log(
-    "  (A ratio near 1.0 means the two networks cost about the same for the same\n" +
-      "   transaction under these assumptions. A ratio > 1 means L2 is cheaper.)"
+    "  (L1/L2 cost ratio = gas-price ratio x token-price ratio. A ratio near 1.0\n" +
+      "   means the two networks cost about the same for the same transaction under\n" +
+      "   these assumptions. A ratio > 1 means L2 is cheaper.)"
   );
 
   const rows = gasRows.map((r) => {
@@ -238,7 +255,7 @@ async function main() {
     };
   });
 
-  console.log("\nPer-operation cost under the measured prices:");
+  console.log("\nPer-operation cost under the selected prices (assumed or live):");
   console.table(rows);
 
   const caveats = [
@@ -248,10 +265,11 @@ async function main() {
     "L2 transaction cost here EXCLUDES the L1 data-availability charge for calldata, " +
       "which on rollups is frequently the dominant cost. L2 figures are therefore " +
       "optimistically low.",
-    "Gas prices were captured once, at run time, and are volatile. Testnet gas prices " +
-      "in particular do not predict mainnet economics.",
+    "Gas prices are either one live eth_gasPrice reading or an explicit operator " +
+      "assumption. Either way they are volatile, and testnet gas prices do not predict " +
+      "mainnet economics.",
     "USD conversion uses operator-supplied token prices, which are assumptions, not " +
-      "measurements. Re-run with --eth-usd and --matic-usd to re-price.",
+      "measurements. Re-run with --eth-usd and --pol-usd to re-price.",
     "No deployment to a public testnet has been performed, so there are no real " +
       "latency or throughput figures for either network.",
   ];
@@ -262,7 +280,8 @@ async function main() {
   mkdirSync("benchmarks/results", { recursive: true });
   const output = {
     generatedAt: new Date().toISOString(),
-    model: "execution gas (measured locally) x live gas price x assumed token price",
+    model:
+      "execution gas (measured locally) x gas price (live reading or operator assumption) x token price (assumed)",
     deployedToTestnet: false,
     networks: networks.map((n) => ({
       label: n.label,
@@ -277,7 +296,7 @@ async function main() {
       gasPriceRatio: Number(priceRatio.toFixed(4)),
       tokenPriceRatio: Number((l1.nativeUsd / l2.nativeUsd).toFixed(4)),
       combinedCostRatio: Number(
-        (priceRatio / (l1.nativeUsd / l2.nativeUsd)).toFixed(4)
+        (priceRatio * (l1.nativeUsd / l2.nativeUsd)).toFixed(4)
       ),
     },
     operations: rows,
@@ -297,8 +316,8 @@ async function main() {
         r.l1Usd,
         r.l2Usd,
         r.l2OverL1Pct,
-        r.pctOf5UsdL1,
-        r.pctOf5UsdL2,
+        r.pctOf5usdL1,
+        r.pctOf5usdL2,
       ].join(",")
     ),
   ].join("\n");

@@ -70,6 +70,31 @@ systemRouter.get("/indexer/status", (_req: Request, res: Response) => {
   res.json({ data: indexer.getStatus() });
 });
 
+/**
+ * GET /api/config — deployment addresses and the capabilities that depend on secrets.
+ * The frontend uses this to build contract instances instead of hardcoding addresses.
+ */
+systemRouter.get("/config", async (_req: Request, res: Response) => {
+  const { getChainClient } = await import("../chain/client.js");
+  const { evidenceMode } = await import("../services/evidence.js");
+  const client = getChainClient();
+  res.json({
+    data: {
+      chainId: config.CHAIN_ID,
+      network: config.NETWORK_NAME,
+      contracts: {
+        factory: client.addresses.CampaignFactory ?? null,
+        verifier: client.addresses.MilestoneVerifier ?? null,
+        disputes: client.addresses.DisputeResolution ?? null,
+        credentials: client.addresses.CredentialRegistry ?? null,
+        reputation: client.addresses.ReputationRegistry ?? null,
+      },
+      evidence: evidenceMode(),
+      mlService: config.ML_SERVICE_URL,
+    },
+  });
+});
+
 const credQuery = z.object({
   subject: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   schemaType: z.string().optional(),
@@ -124,19 +149,24 @@ systemRouter.get("/stats", (_req: Request, res: Response) => {
     .prepare("SELECT state, COUNT(*) AS n FROM campaigns WHERE chain_id = ? GROUP BY state")
     .all(config.CHAIN_ID) as Array<{ state: string; n: number }>;
 
+  // Wei totals are decimal strings far above int64 (1 ETH = 1e18 wei), so SQLite's
+  // SUM(CAST(... AS INTEGER)) overflows. Sum in BigInt in JS instead: exact at any
+  // magnitude, and reported as a string so consumers do not parse it as a float.
   const raised = db
-    .prepare(
-      "SELECT COALESCE(SUM(CAST(total_contributed AS INTEGER)), 0) AS total FROM campaigns WHERE chain_id = ?"
-    )
-    .get(config.CHAIN_ID) as { total: number | bigint };
+    .prepare("SELECT total_contributed AS total FROM campaigns WHERE chain_id = ?")
+    .all(config.CHAIN_ID) as Array<{ total: string | number | bigint | null }>;
+
+  let totalRaisedWei = 0n;
+  for (const row of raised) {
+    if (row.total === null || row.total === undefined || row.total === "") continue;
+    totalRaisedWei += BigInt(row.total.toString());
+  }
 
   res.json({
     data: {
       campaigns: Number(total.n),
       byState: Object.fromEntries(byState.map((r) => [r.state, Number(r.n)])),
-      // Approximate: SQLite SUM over a wide range loses precision above 2^53. Reported
-      // as a string so a consumer can parse it without silent corruption.
-      totalRaisedWei: String(raised.total),
+      totalRaisedWei: totalRaisedWei.toString(),
     },
   });
 });

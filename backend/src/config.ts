@@ -38,8 +38,12 @@ const schema = z.object({
   RPC_URL: z.string().trim().default("http://127.0.0.1:8545"),
   CHAIN_ID: z.coerce.number().int().default(31337),
 
-  /** Selects deployments/<NETWORK_NAME>.json. Must match the Hardhat network name. */
-  NETWORK_NAME: z.string().trim().default("hardhat"),
+  /**
+   * Selects deployments/<NETWORK_NAME>.json. Must match the Hardhat network name.
+   * Defaults to `localhost` because RPC_URL defaults to a local node; the in-process
+   * `hardhat` network cannot be reached over HTTP.
+   */
+  NETWORK_NAME: z.string().trim().default("localhost"),
 
   FACTORY_ADDRESS: z.string().trim().optional(),
   VERIFIER_ADDRESS: z.string().trim().optional(),
@@ -50,6 +54,18 @@ const schema = z.object({
   PINATA_JWT: z.string().trim().optional(),
   PINATA_GATEWAY_URL: z.string().trim().default("https://gateway.pinata.cloud"),
   IPFS_GATEWAY_URL: z.string().trim().default("https://ipfs.io/ipfs/"),
+  /**
+   * Optional local IPFS daemon (Kubo) HTTP API. When absent and no Pinata JWT is set, the
+   * backend falls back to a local content-addressed store, explicitly reported as
+   * `local-content-store` rather than IPFS.
+   */
+  IPFS_API_URL: z.string().trim().optional(),
+  IPFS_LOCAL_DIR: z.string().trim().default("./data/evidence"),
+
+  /** VC issuer key. Only needed for credential issuance/attestation. */
+  VC_ISSUER_PRIVATE_KEY: z.string().trim().optional(),
+  VC_ISSUER_DID: z.string().trim().optional(),
+  VC_ATTEST_ONCHAIN: z.coerce.boolean().default(false),
 
   ML_SERVICE_URL: z.string().trim().default("http://127.0.0.1:8000"),
   ML_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),

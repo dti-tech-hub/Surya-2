@@ -24,6 +24,7 @@ export const VERIFIER_STAKE = ethers.parseEther("1");
 export interface Deployment {
   factory: any;
   verifier: any;
+  reputation: any;
   creator: HardhatEthersSigner;
   backer: HardhatEthersSigner;
   backer2: HardhatEthersSigner;
@@ -52,20 +53,28 @@ export async function deploySystem(): Promise<Deployment> {
   );
   await verifier.waitForDeployment();
 
+  const Reputation = await ethers.getContractFactory("ReputationRegistry");
+  const reputation = await Reputation.deploy(creator.address);
+  await reputation.waitForDeployment();
+
   const Factory = await ethers.getContractFactory("CampaignFactory");
   const factory = await Factory.deploy(
     await verifier.getAddress(),
+    await reputation.getAddress(),
     creator.address,
     treasury.address
   );
   await factory.waitForDeployment();
 
-  // The factory needs registrar rights so its deployments can be verified.
+  // The factory needs registrar rights so its deployments can be verified and can
+  // write their own reputation outcomes.
   await verifier.connect(creator).setRegistrar(await factory.getAddress(), true);
+  await reputation.connect(creator).setRegistrar(await factory.getAddress(), true);
 
   return {
     factory,
     verifier,
+    reputation,
     creator,
     backer,
     backer2,
@@ -90,7 +99,7 @@ export async function buildParams(goal = GOAL, fundingDays = 30n) {
       ethers.keccak256(ethers.toUtf8Bytes("first 100 units produced")),
       ethers.keccak256(ethers.toUtf8Bytes("shipped to backers")),
     ],
-    specificationCIDs: ["bafybeigspec0", "bafybeigspec1", "bafybeigspec2"],
+    specificationCIDs: ["local-spec-0", "local-spec-1", "local-spec-2"],
     milestoneDeadlines: [
       fundingDeadline + Number(10n * DAY),
       fundingDeadline + Number(20n * DAY),

@@ -34,6 +34,7 @@ import {
   disputeRepository,
   eventRepository,
   milestoneRepository,
+  reputationCacheRepository,
   voteRepository,
   type Row,
 } from "../db/repositories.js";
@@ -43,16 +44,24 @@ import { getChainClient, type ContractName } from "../chain/client.js";
 const WATCHED: Array<{ contract: ContractName; event: string }> = [
   { contract: "CampaignFactory", event: "CampaignDeployed" },
   { contract: "Campaign", event: "Contributed" },
+  { contract: "Campaign", event: "FundingClosed" },
   { contract: "Campaign", event: "EvidenceSubmitted" },
   { contract: "Campaign", event: "MilestoneVerified" },
   { contract: "Campaign", event: "MilestoneRejected" },
   { contract: "Campaign", event: "StateChanged" },
-  { contract: "Campaign", event: "Refunded" },
+  { contract: "Campaign", event: "RefundClaimed" },
+  { contract: "Campaign", event: "CreatorBalanceClaimed" },
+  { contract: "Campaign", event: "CampaignDisputeResolved" },
   { contract: "MilestoneVerifier", event: "VoteCast" },
   { contract: "DisputeResolution", event: "DisputeRaised" },
   { contract: "DisputeResolution", event: "DisputeResolved" },
   { contract: "CredentialRegistry", event: "CredentialAttested" },
   { contract: "CredentialRegistry", event: "CredentialRevoked" },
+  { contract: "ReputationRegistry", event: "MilestoneRecorded" },
+  { contract: "ReputationRegistry", event: "CampaignRecorded" },
+  { contract: "ReputationRegistry", event: "DisputeRecorded" },
+  { contract: "ReputationRegistry", event: "VerifierVoteRecorded" },
+  { contract: "ReputationRegistry", event: "SlashRecorded" },
 ];
 
 export interface IndexerStatus {
@@ -102,19 +111,14 @@ export class Indexer {
 
     const { provider } = getChainClient();
     try {
-      const stored = getDb()
-        .prepare("SELECT last_block FROM indexer_cursor WHERE chain_id = ? AND contract = ?")
-        .get(config.CHAIN_ID, contract) as { last_block: number } | undefined;
-
-      // No hash was recorded at this height, so there is nothing to compare.
-      if (!stored) return null;
+      const storedHash = eventRepository.cursorHashFor(config.CHAIN_ID, contract, cursor);
+      // A cursor written by an older schema has no hash. It cannot be checked, but the
+      // next advanced cursor records one.
+      if (!storedHash) return null;
 
       const block = await provider.getBlock(cursor);
-      if (!block) {
-        // The block is not on the canonical chain any more.
-        return cursor;
-      }
-      return null;
+      if (!block) return cursor;
+      return block.hash === storedHash ? null : cursor;
     } catch {
       // RPC hiccup: do NOT treat a transient failure as a reorg. Returning null means
       // we keep the existing cursor and retry next poll, which is the safe behaviour:
@@ -147,6 +151,7 @@ export class Indexer {
 
     const logs: Log[] = await contract.queryFilter(filter, fromBlock, toBlock);
     let count = 0;
+    const blockCache = new Map<number, { timestamp: number; hash: string }>();
 
     for (const log of logs) {
       const parsed = contract.interface.parseLog({
@@ -155,8 +160,16 @@ export class Indexer {
       });
       if (!parsed) continue;
 
-      const block = await client.provider.getBlock(log.blockNumber);
-      const blockTime = block?.timestamp ?? 0;
+      let block = blockCache.get(log.blockNumber);
+      if (!block) {
+        const fetched = await client.provider.getBlock(log.blockNumber);
+        block = {
+          timestamp: fetched?.timestamp ?? 0,
+          hash: fetched?.hash ?? "",
+        };
+        blockCache.set(log.blockNumber, block);
+      }
+      const blockTime = block.timestamp;
       const args = parsed.args as Record<string, unknown>;
 
       const emittingAddress = addressOverride ?? client.addresses[contractName];
@@ -167,15 +180,16 @@ export class Indexer {
         contract: emittingAddress,
         event_name: eventName,
         campaign_address: (args.campaign as string | undefined) ?? emittingAddress,
-        actor: (args.backer as string) ?? (args.verifier as string) ?? (args.creator as string) ?? (args.creatorAddress as string) ?? undefined,
+        actor: (args.backer as string) ?? (args.verifier as string) ?? (args.creator as string) ?? (args.creatorAddress as string) ?? (args.subject as string) ?? undefined,
         block_number: log.blockNumber,
+        block_hash: block.hash,
         block_time: blockTime,
         args: JSON.parse(JSON.stringify(args, bigintReplacer)),
         confirmed: 1,
       });
 
       if (inserted) count++;
-      this.applyProjection(contractName, eventName, args, {
+      await this.applyProjection(contractName, eventName, args, {
         txHash: log.transactionHash,
         logIndex: log.index,
         blockNumber: log.blockNumber,
@@ -195,13 +209,13 @@ export class Indexer {
    * crash between the event insert and the projection). Each projection is itself
    * idempotent, so replaying is safe.
    */
-  private applyProjection(
+  private async applyProjection(
     contractName: ContractName,
     eventName: string,
     args: Record<string, any>,
     meta: { txHash: string; logIndex: number; blockNumber: number; blockTime: number; emittingAddress?: string },
     contractAddress?: string
-  ): void {
+  ): Promise<void> {
     const chain = config.CHAIN_ID;
     /**
      * For Campaign-level events (Contributed, EvidenceSubmitted, MilestoneVerified,
@@ -215,40 +229,50 @@ export class Indexer {
     switch (`${contractName}.${eventName}`) {
       case "CampaignFactory.CampaignDeployed": {
         const address = (args.campaign as string | undefined) ?? meta.emittingAddress ?? contractAddress as string;
+        // CampaignDeployed deliberately carries only scalar metadata. The milestone
+        // schedule (description hashes, CIDs, tranche bps, deadlines) is stored in the
+        // campaign, so read it from the canonical contract rather than assuming it was
+        // present in the event. An earlier version looked for non-existent event fields
+        // and therefore indexed every campaign with zero milestones.
+        const onchain = getChainClient().at("Campaign", address);
+        const [creator, goal, fundingDeadline, treasury, onchainState, count] =
+          await Promise.all([
+            onchain.creator() as Promise<string>,
+            onchain.goal() as Promise<bigint>,
+            onchain.fundingDeadline() as Promise<bigint>,
+            onchain.treasury() as Promise<string>,
+            onchain.state() as Promise<bigint>,
+            onchain.milestoneCount() as Promise<bigint>,
+          ]);
+
         campaignRepository.upsert(chain, {
           address,
-          creator: args.creatorAddress,
-          goal_wei: (args.goalAmount ?? 0).toString(),
-          funding_deadline: Number(args.fundingDeadline ?? 0),
-          state: "Funding",
+          creator,
+          goal_wei: goal.toString(),
+          funding_deadline: Number(fundingDeadline),
+          state: stateName(Number(onchainState)),
           total_contributed: "0",
           total_released: "0",
           released_bps: 0,
-          treasury: "",
+          treasury,
           created_at: meta.blockTime,
           updated_at: meta.blockTime,
           created_tx_hash: meta.txHash,
           created_block: meta.blockNumber,
         } as Row);
 
-        // Tranche schedule and per-milestone deadlines arrive in the same event.
-        const bps: number[] = (args.tranchePercentages ?? []).map(Number);
-        const hashes: string[] = args.descriptionHashes ?? [];
-        const cids: string[] = args.specificationCIDs ?? [];
-        const deadlines: number[] = (args.milestoneDeadlines ?? []).map(Number);
-        const count = Math.min(bps.length, hashes.length, cids.length, deadlines.length);
-
-        if (count > 0) {
+        if (count > 0n) {
+          const list = (await onchain.getMilestones(0, count)) as any[];
           milestoneRepository.upsertMany(
             chain,
             address,
-            Array.from({ length: count }, (_, i) => ({
+            list.map((m, i) => ({
               idx: i,
-              description_hash: hashes[i],
-              specification_cid: cids[i],
-              tranche_bps: bps[i],
-              deadline: deadlines[i],
-              state: "Pending",
+              description_hash: m.descriptionHash,
+              specification_cid: m.specificationCID,
+              tranche_bps: Number(m.trancheBps),
+              deadline: Number(m.deadline),
+              state: milestoneStateName(Number(m.state)),
             }))
           );
         }
@@ -265,6 +289,19 @@ export class Indexer {
           block_number: meta.blockNumber,
           block_time: meta.blockTime,
         });
+        // Recompute the total from contributions on disk instead of trusting the event
+        // value: replays and post-rollback rescans then converge to the same sum, and a
+        // bigint-safe sum avoids the 2^53 float precision loss of a naive addition.
+        const contributedCampaign = campaignRepository.findByAddress(chain, campaignAddress);
+        if (contributedCampaign) {
+          campaignRepository.updateTotals(
+            chain,
+            campaignAddress,
+            contributionRepository.sumByCampaign(chain, campaignAddress),
+            String(contributedCampaign.total_released),
+            Number(contributedCampaign.released_bps)
+          );
+        }
         break;
       }
 
@@ -302,6 +339,14 @@ export class Indexer {
         break;
       }
 
+      case "Campaign.CampaignDisputeResolved": {
+        // 1 = Refund, 2 = Release, 3 = Partial (see Campaign.resolveDispute).
+        const outcome = Number(args.outcome);
+        const state = outcome === 2 ? "Verified" : outcome === 3 ? "PartiallyReleased" : "Refunded";
+        milestoneRepository.setState(chain, campaignAddress, Number(args.index), state, meta.blockTime);
+        break;
+      }
+
       case "Campaign.StateChanged": {
         const previous = Number(args.previous);
         const current = Number(args.current);
@@ -326,6 +371,12 @@ export class Indexer {
       }
 
       case "DisputeResolution.DisputeRaised": {
+        // The event does not carry the voting deadline. Deriving it from the indexer poll
+        // interval (the previous behaviour) produced a five-second window instead of the
+        // module's three-day window, so the API reported every dispute as already past
+        // its deadline.
+        const module = getChainClient().get("DisputeResolution");
+        const votingWindow = Number(await module.votingWindow());
         disputeRepository.insert(chain, {
           dispute_key: args.disputeKey,
           campaign_address: campaignAddress,
@@ -334,7 +385,7 @@ export class Indexer {
           state: "Voting",
           bond_wei: (args.bond ?? 0).toString(),
           raised_at: meta.blockTime,
-          vote_deadline: meta.blockTime + config.INDEXER_POLL_MS,
+          vote_deadline: meta.blockTime + votingWindow,
         });
         break;
       }
@@ -368,6 +419,17 @@ export class Indexer {
         credentialRepository.revoke(chain, args.credentialId, meta.blockTime);
         break;
       }
+
+      case "ReputationRegistry.MilestoneRecorded":
+      case "ReputationRegistry.CampaignRecorded":
+      case "ReputationRegistry.DisputeRecorded":
+      case "ReputationRegistry.VerifierVoteRecorded":
+      case "ReputationRegistry.SlashRecorded": {
+        const subject = String(args.subject);
+        const score = Number(args.scoreAfter ?? 0);
+        reputationCacheRepository.set(chain, subject, score, tierName(score));
+        break;
+      }
     }
   }
 
@@ -385,9 +447,14 @@ export class Indexer {
 
     const reorgAt = await this.detectReorg(cursorKey, from);
     if (reorgAt !== null) {
-      console.warn(`[indexer] reorg detected on ${cursorKey} at block ${reorgAt}; rolling back`);
-      eventRepository.deleteFromBlock(config.CHAIN_ID, reorgAt);
-      from = reorgAt;
+      console.warn(`[indexer] reorg detected on ${cursorKey} at block ${reorgAt}; rebuilding projections`);
+      // A targeted rollback can leave campaign totals and milestone states derived from
+      // orphaned blocks. Rebuilding every projection from the canonical chain is slower
+      // but guarantees convergence; this is the documented deep-reorg fallback.
+      eventRepository.resetAll(config.CHAIN_ID);
+      this.status.cursors = {};
+      this.status.eventsIndexed = 0;
+      return 0;
     }
 
     if (from >= safeHead) {
@@ -398,6 +465,7 @@ export class Indexer {
     const to = Math.min(from + this.chunkSize, safeHead);
 
     let processed = 0;
+    let failed = false;
     for (const { contract, event } of WATCHED) {
       if (contract !== contractName) continue;
       try {
@@ -407,14 +475,18 @@ export class Indexer {
         // which has no entry for dynamically deployed campaigns.
         processed += await this.processRange(contract, event, from, to, cursorKey);
       } catch (error) {
+        failed = true;
         this.status.lastError = (error as Error).message;
         console.error(`[indexer] ${contract}.${event} ${from}-${to} failed:`, (error as Error).message);
       }
     }
 
-    // The cursor only advances past a range that was fully attempted, so a mid-range
-    // failure causes a replay rather than a permanent gap.
-    eventRepository.setCursor(config.CHAIN_ID, cursorKey, to);
+    // Only advance after every event type in the range succeeded. Advancing after a
+    // failed projection would create a permanent gap that no later replay can fill.
+    if (failed) return processed;
+
+    const endBlock = await client.provider.getBlock(to);
+    eventRepository.setCursor(config.CHAIN_ID, cursorKey, to, endBlock?.hash ?? null);
     this.status.cursors[cursorKey] = to;
     this.status.eventsIndexed += processed;
     return processed;
@@ -485,6 +557,20 @@ function bigintReplacer(_key: string, value: unknown): unknown {
 /** Maps the Campaign.State enum to its label. */
 function stateName(value: number): string {
   return ["Funding", "Active", "Failed", "Completed", "Cancelled"][value] ?? "Unknown";
+}
+
+/** Maps the Campaign.MilestoneState enum to its label. */
+function milestoneStateName(value: number): string {
+  return ["Pending", "Submitted", "Verified", "Rejected"][value] ?? "Pending";
+}
+
+/** Maps a reputation score (BPS) to the registry's tier thresholds. */
+function tierName(score: number): string {
+  if (score >= 8_000) return "Platinum";
+  if (score >= 6_500) return "Gold";
+  if (score >= 4_000) return "Silver";
+  if (score >= 2_000) return "Bronze";
+  return "Unrated";
 }
 
 export const indexer = new Indexer();

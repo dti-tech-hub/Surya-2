@@ -89,6 +89,9 @@ contract MilestoneVerifier {
 
     uint128 internal constant BPS = 10_000;
     uint128 internal constant MAX_BPS = 1_000; // 100% in permille-free bps space
+    /// @notice After a round settles, stake stays locked briefly so non-voters can be
+    ///         penalised before they can withdraw.
+    uint64 public constant NON_VOTER_PENALTY_WINDOW = 1 days;
 
     /* -------------------------------------------------------------------- */
     /*                                Immutables                             */
@@ -125,8 +128,23 @@ contract MilestoneVerifier {
     /// @notice voteOf[keccak256(campaign, index, voter)] => VoteChoice
     mapping(bytes32 => VoteChoice) public voteOf;
 
+    /// @notice Vote weight snapshotted when the vote was cast. Settlement must use this
+    ///         rather than the verifier's current stake, otherwise a verifier could
+    ///         withdraw before settlement and escape a minority slash.
+    mapping(bytes32 => uint256) public voteWeight;
+
     /// @notice Guards against claiming the same round's settlement twice.
     mapping(bytes32 => bool) public settlementClaimed;
+
+    /// @notice Guards against penalising the same non-voter twice.
+    mapping(bytes32 => bool) public nonVoterPenalised;
+
+    /// @notice Number of rounds opened but not yet settled.
+    uint256 public openRounds;
+
+    /// @notice Withdrawals are blocked until this timestamp. Extended to the furthest
+    ///         open voting deadline, then to a short penalty window after settlement.
+    uint64 public withdrawalLockUntil;
 
     /// @notice address => Verifier
     mapping(address => Verifier) public verifiers;
@@ -216,6 +234,7 @@ contract MilestoneVerifier {
     error AlreadyClaimed(bytes32 roundKey);
     error NoRewardOrPenalty();
     error InsufficientRewardPool(uint256 required, uint256 available);
+    error StakeLocked(uint64 until);
     error TransferFailed();
 
     /* -------------------------------------------------------------------- */
@@ -390,6 +409,9 @@ contract MilestoneVerifier {
     function withdrawStake(uint256 amount) external {
         Verifier storage v = verifiers[msg.sender];
         if (!v.active) revert NotActiveVerifier(msg.sender);
+        if (block.timestamp < withdrawalLockUntil) {
+            revert StakeLocked(withdrawalLockUntil);
+        }
         if (amount == 0 || amount > v.stake) revert InsufficientStake(amount, v.stake);
 
         v.stake -= uint128(amount);
@@ -426,6 +448,11 @@ contract MilestoneVerifier {
         // subsequently enter or exit.
         r.activeStakeAtOpen = uint128(activeStake_);
 
+        // No stake may leave while a round is live: otherwise a verifier could vote,
+        // withdraw, and make the slashing transfer fail at settlement.
+        openRounds += 1;
+        if (voteDeadline > withdrawalLockUntil) withdrawalLockUntil = voteDeadline;
+
         emit RoundOpened(campaign, index, voteDeadline, r.activeStakeAtOpen);
     }
 
@@ -461,6 +488,7 @@ contract MilestoneVerifier {
 
         voteOf[key] = choice;
         uint256 weight = v.stake;
+        voteWeight[key] = weight;
 
         r.votedWeight += uint128(weight);
         if (choice == VoteChoice.Approve) {
@@ -531,17 +559,20 @@ contract MilestoneVerifier {
         r.settled = true;
         r.closed = true;
 
-        // Route a share of any slashed stake into the reward pool, to be claimed by
-        // verifiers who voted correctly.
-        if (outcome == VoteChoice.Reject) {
-            uint256 pool = rewardPool;
-            rewardPool = 0;
-            r.rewardPoolShare = pool;
-        } else {
-            // Approved: anyone who dissented is slashed, so seed the pool with the
-            // (future) dissent penalty is not possible without knowing dissent weight;
-            // instead we leave the existing pool for correct voters.
-            r.rewardPoolShare = rewardPool;
+        // Reserve the currently available reward pool to THIS round and zero the global
+        // counter. The earlier revision assigned `rewardPool` to the round without
+        // clearing it in the approve branch, so several rounds could each promise the
+        // same funds. Now a round owns exactly what was in the pool when it settled.
+        uint256 pool = rewardPool;
+        if (pool > 0) rewardPool = 0;
+        r.rewardPoolShare = pool;
+
+        // Close the withdrawal lock for this round. When no rounds remain, keep stake
+        // locked for a short window so non-voters can still be penalised.
+        if (openRounds > 0) openRounds -= 1;
+        if (openRounds == 0) {
+            uint64 until = uint64(block.timestamp) + NON_VOTER_PENALTY_WINDOW;
+            if (until > withdrawalLockUntil) withdrawalLockUntil = until;
         }
 
         emit RoundSettled(campaign, index, outcome, r.approveWeight, r.rejectWeight, required, r.rewardPoolShare);
@@ -568,29 +599,35 @@ contract MilestoneVerifier {
         settlementClaimed[key] = true;
 
         bool correct = choice == r.outcome;
+        uint256 weight = voteWeight[key];
 
         if (correct) {
-            uint256 weight = verifiers[msg.sender].stake;
             uint256 share =
                 r.correctWeight == 0 ? 0 : (r.rewardPoolShare * weight) / uint256(r.correctWeight);
-            if (share > rewardPool) revert InsufficientRewardPool(share, rewardPool);
-            rewardPool -= share;
+            if (share > r.rewardPoolShare) share = r.rewardPoolShare;
+            r.rewardPoolShare -= share;
             verifiers[msg.sender].rewardDebt += share;
 
-            (bool ok, ) = payable(msg.sender).call{ value: share }("");
-            if (!ok) revert TransferFailed();
+            if (share > 0) {
+                (bool ok, ) = payable(msg.sender).call{ value: share }("");
+                if (!ok) revert TransferFailed();
+            }
 
             emit SettlementClaimed(msg.sender, key, share, 0);
         } else {
-            // Minority-incorrect vote: slash a percentage of stake.
+            // Minority-incorrect vote: slash a percentage of the stake snapshotted at
+            // vote time. The verifier cannot have withdrawn it: withdrawals are locked
+            // until the round settles (plus a non-voter penalty window).
             Verifier storage v = verifiers[msg.sender];
-            uint256 slash = (uint256(v.stake) * slashBps) / BPS;
+            uint256 staked = v.stake;
+            uint256 base = weight < staked ? weight : staked;
+            uint256 slash = (base * slashBps) / BPS;
             if (slash > 0) {
                 v.stake -= uint128(slash);
                 activeStake_ -= slash;
 
-                // Split the slashed stake: `rewardBps` rewards correct voters, the
-                // remainder accrues to the treasury.
+                // Split the slashed stake: `rewardBps` seeds future rounds' reward
+                // pool, the remainder accrues to the treasury.
                 uint256 toPool = (slash * rewardBps) / BPS;
                 uint256 toTreasury = slash - toPool;
                 rewardPool += toPool;
@@ -604,25 +641,46 @@ contract MilestoneVerifier {
     }
 
     /**
-     * @notice Slashes a staked verifier who did not vote in a settled round.
-     * @dev Mitigates the "inactive verifier" attack where a whale stakes to inflate
-     *      quorum, then abstains to make quorum unreachable.
+     * @notice Slashes the caller if they failed to vote in a settled round.
+     * @dev Retained for compatibility; {penalizeNonVoter(address,uint256,address)} is
+     *      the canonical form because a non-voter has no incentive to punish themselves.
      */
     function penalizeNonVoter(address campaign, uint256 index) external {
+        _penalizeNonVoter(campaign, index, msg.sender);
+    }
+
+    /**
+     * @notice Slashes any verifier who was active when a round opened and did not vote.
+     * @dev Permissionless so third parties can enforce participation. Without this, the
+     *      original implementation only let a non-voter penalise themselves, which means
+     *      the penalty was never actually applied by anyone.
+     */
+    function penalizeNonVoter(address campaign, uint256 index, address verifier) external {
+        _penalizeNonVoter(campaign, index, verifier);
+    }
+
+    function _penalizeNonVoter(address campaign, uint256 index, address verifier) private {
         Round storage r = rounds[campaign][index];
         if (!r.settled) revert RoundNotOpen(campaign, index);
 
-        bytes32 key = voteKey(campaign, index, msg.sender);
+        bytes32 key = voteKey(campaign, index, verifier);
         if (voteOf[key] != VoteChoice.None) revert NoRewardOrPenalty();
-        if (settlementClaimed[key]) revert AlreadyClaimed(key);
-        settlementClaimed[key] = true;
+        if (nonVoterPenalised[key]) revert AlreadyClaimed(key);
+        nonVoterPenalised[key] = true;
 
-        uint256 slash = (uint256(verifiers[msg.sender].stake) * slashBps) / BPS;
+        Verifier storage v = verifiers[verifier];
+        // Only verifiers that were already active when the round opened owed a vote.
+        if (!v.active || v.joinedAt > r.openedAt) revert NotActiveVerifier(verifier);
+
+        uint256 slash = (uint256(v.stake) * slashBps) / BPS;
         if (slash > 0) {
-            verifiers[msg.sender].stake -= uint128(slash);
+            v.stake -= uint128(slash);
             activeStake_ -= slash;
+            if (v.stake == 0) v.active = false;
+            (bool ok, ) = payable(treasury).call{ value: slash }("");
+            if (!ok) revert TransferFailed();
         }
-        emit NonVoterPenalised(msg.sender, key, slash);
+        emit NonVoterPenalised(verifier, key, slash);
     }
 
     /* -------------------------------------------------------------------- */
